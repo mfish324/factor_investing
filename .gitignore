@@ -1,0 +1,43 @@
+# Environment and secrets
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Data and cache
+data/cache.db
+data/*.db
+*.sqlite3
+
+# Results (optional - uncomment to ignore)
+# results/
+
+# Models
+models/saved/*.pkl
+models/saved/*.joblib
+
+# Logs
+*.log
+trading_logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/

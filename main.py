@@ -1,0 +1,728 @@
+#!/usr/bin/env python3
+"""
+Factor Investing Analysis Application - CLI Entry Point
+
+Usage:
+    python main.py run --all          # Run all models
+    python main.py run --model magic_formula
+    python main.py compare            # Compare model results
+    python main.py report --output results/
+    python main.py update-data        # Update data cache
+    python main.py list-models        # List available models
+    python main.py train-ml           # Train ML models
+"""
+
+import click
+import logging
+import sys
+from pathlib import Path
+from typing import Dict, List, Optional
+from datetime import datetime
+import pandas as pd
+
+from config import (
+    POLYGON_API_KEY,
+    BACKTEST_START_DATE,
+    BACKTEST_END_DATE,
+    DEFAULT_PORTFOLIO_SIZE,
+    DEFAULT_REBALANCE_FREQUENCY,
+    RESULTS_DIR
+)
+from data.polygon_client import PolygonClient
+from data.cache import CacheManager
+from data.universe import UniverseManager
+from models.magic_formula import MagicFormulaModel
+from models.piotroski import PiotroskiModel
+from models.garp import GARPModel
+from models.quality_value import QualityValueModel
+from models.three_factor import ThreeFactorModel
+from models.six_factor import SixFactorModel
+from backtesting.engine import BacktestEngine, run_multiple_backtests
+from backtesting.metrics import BacktestResult
+from analysis.comparison import ModelComparison
+from analysis.visualization import FactorVisualizer
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+
+# Available models registry
+AVAILABLE_MODELS = {
+    'magic_formula': MagicFormulaModel,
+    'piotroski': PiotroskiModel,
+    'garp': GARPModel,
+    'quality_value': QualityValueModel,
+    'three_factor': ThreeFactorModel,
+    'six_factor': SixFactorModel,
+}
+
+
+def get_polygon_client() -> PolygonClient:
+    """Get Polygon client with API key validation."""
+    if not POLYGON_API_KEY:
+        logger.error("POLYGON_API_KEY environment variable not set")
+        logger.info("Set it with: export POLYGON_API_KEY='your_key_here'")
+        sys.exit(1)
+    return PolygonClient()
+
+
+def load_data(
+    polygon_client: PolygonClient,
+    universe: List[str],
+    start_date: str,
+    end_date: str,
+    show_progress: bool = True
+) -> tuple:
+    """
+    Load financial and price data for the universe.
+
+    Returns:
+        Tuple of (financials_dict, prices_dict, market_caps, benchmark_prices)
+    """
+    from tqdm import tqdm
+
+    logger.info(f"Loading data for {len(universe)} stocks...")
+
+    # Load financials
+    financials = {}
+    iterator = tqdm(universe, desc="Loading financials") if show_progress else universe
+    for ticker in iterator:
+        try:
+            df = polygon_client.get_financials(ticker, period='annual')
+            if not df.empty:
+                financials[ticker] = df
+        except Exception as e:
+            logger.warning(f"Failed to load financials for {ticker}: {e}")
+
+    # Load prices
+    prices = {}
+    iterator = tqdm(universe, desc="Loading prices") if show_progress else universe
+    for ticker in iterator:
+        try:
+            df = polygon_client.get_prices(ticker, start_date, end_date)
+            if not df.empty:
+                prices[ticker] = df
+        except Exception as e:
+            logger.warning(f"Failed to load prices for {ticker}: {e}")
+
+    # Get market caps
+    market_caps = {}
+    iterator = tqdm(universe, desc="Loading market caps") if show_progress else universe
+    for ticker in iterator:
+        try:
+            mc = polygon_client.get_market_cap(ticker)
+            if mc:
+                market_caps[ticker] = mc
+        except Exception as e:
+            pass
+
+    # Load benchmark (SPY)
+    benchmark_prices = None
+    try:
+        benchmark_prices = polygon_client.get_prices('SPY', start_date, end_date)
+    except Exception as e:
+        logger.warning(f"Failed to load benchmark prices: {e}")
+
+    logger.info(f"Loaded: {len(financials)} financials, {len(prices)} prices, {len(market_caps)} market caps")
+
+    return financials, prices, market_caps, benchmark_prices
+
+
+@click.group()
+def cli():
+    """Factor Investing Analysis Application"""
+    pass
+
+
+@cli.command()
+@click.option('--all', 'run_all', is_flag=True, help='Run all available models')
+@click.option('--model', '-m', multiple=True, help='Specific model(s) to run')
+@click.option('--start-date', default=BACKTEST_START_DATE, help='Backtest start date')
+@click.option('--end-date', default=BACKTEST_END_DATE, help='Backtest end date')
+@click.option('--portfolio-size', default=DEFAULT_PORTFOLIO_SIZE, help='Number of stocks')
+@click.option('--rebalance', default=DEFAULT_REBALANCE_FREQUENCY, help='Rebalance frequency')
+@click.option('--output', '-o', default=None, help='Output directory')
+def run(run_all, model, start_date, end_date, portfolio_size, rebalance, output):
+    """Run backtests for factor models."""
+
+    # Determine which models to run
+    if run_all:
+        models_to_run = list(AVAILABLE_MODELS.keys())
+    elif model:
+        models_to_run = list(model)
+    else:
+        click.echo("Please specify --all or --model <name>")
+        click.echo("Available models: " + ", ".join(AVAILABLE_MODELS.keys()))
+        return
+
+    # Validate models
+    for m in models_to_run:
+        if m not in AVAILABLE_MODELS:
+            click.echo(f"Unknown model: {m}")
+            click.echo("Available models: " + ", ".join(AVAILABLE_MODELS.keys()))
+            return
+
+    click.echo(f"Running models: {', '.join(models_to_run)}")
+    click.echo(f"Period: {start_date} to {end_date}")
+
+    # Initialize clients
+    polygon_client = get_polygon_client()
+    universe_manager = UniverseManager()
+
+    # Get universe
+    universe = universe_manager.get_universe('sp500', exclude_financials=True)
+    click.echo(f"Universe: {len(universe)} stocks")
+
+    # Load data
+    financials, prices, market_caps, benchmark_prices = load_data(
+        polygon_client, universe, start_date, end_date
+    )
+
+    # Filter universe to stocks with data
+    valid_tickers = set(financials.keys()) & set(prices.keys()) & set(market_caps.keys())
+    click.echo(f"Stocks with complete data: {len(valid_tickers)}")
+
+    # Run backtests
+    results = {}
+    for model_name in models_to_run:
+        click.echo(f"\n{'='*50}")
+        click.echo(f"Running: {model_name}")
+        click.echo('='*50)
+
+        model_class = AVAILABLE_MODELS[model_name]
+        model = model_class()
+
+        engine = BacktestEngine(
+            model=model,
+            start_date=start_date,
+            end_date=end_date,
+            rebalance_freq=rebalance,
+            portfolio_size=portfolio_size
+        )
+
+        result = engine.run(
+            financials=financials,
+            prices=prices,
+            market_caps=market_caps,
+            benchmark_prices=benchmark_prices
+        )
+
+        results[model_name] = result
+
+        # Print summary
+        m = result.metrics
+        click.echo(f"\nResults for {model_name}:")
+        click.echo(f"  Total Return: {m.total_return:.2%}")
+        click.echo(f"  Annualized Return: {m.annualized_return:.2%}")
+        click.echo(f"  Sharpe Ratio: {m.sharpe_ratio:.2f}")
+        click.echo(f"  Max Drawdown: {m.max_drawdown:.2%}")
+
+    # Save results
+    output_dir = Path(output) if output else RESULTS_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate comparison report
+    comparison = ModelComparison(results)
+    report = comparison.generate_report(str(output_dir / 'comparison_report.md'))
+
+    # Generate visualizations
+    visualizer = FactorVisualizer(str(output_dir / 'charts'))
+    visualizer.generate_report(results, str(output_dir / 'charts'))
+
+    click.echo(f"\nResults saved to {output_dir}")
+
+    # Print final comparison
+    click.echo("\n" + "="*60)
+    click.echo("FINAL COMPARISON")
+    click.echo("="*60)
+    click.echo(comparison.compare_models().to_string())
+
+
+@cli.command()
+@click.option('--output', '-o', default=None, help='Output directory')
+def compare(output):
+    """Compare model results from previous runs."""
+    click.echo("Loading previous results...")
+    # This would load saved results from disk
+    click.echo("Use 'run --all' first to generate results for comparison")
+
+
+@cli.command()
+@click.option('--output', '-o', default=None, help='Output directory')
+@click.option('--format', '-f', default='html', help='Output format (html, pdf)')
+def report(output, format):
+    """Generate analysis report."""
+    click.echo("Generating report...")
+    click.echo("Use 'run --all' first to generate results for the report")
+
+
+@cli.command('update-data')
+@click.option('--tickers', '-t', multiple=True, help='Specific tickers to update')
+def update_data(tickers):
+    """Update the data cache."""
+    polygon_client = get_polygon_client()
+    cache = CacheManager()
+
+    if tickers:
+        universe = list(tickers)
+    else:
+        universe_manager = UniverseManager()
+        universe = universe_manager.get_sp500()
+
+    click.echo(f"Updating data for {len(universe)} stocks...")
+
+    from tqdm import tqdm
+
+    for ticker in tqdm(universe, desc="Updating"):
+        try:
+            # Force refresh by not using cache
+            polygon_client.get_financials(ticker, use_cache=False)
+            polygon_client.get_prices(
+                ticker,
+                BACKTEST_START_DATE,
+                BACKTEST_END_DATE,
+                use_cache=False
+            )
+        except Exception as e:
+            logger.warning(f"Failed to update {ticker}: {e}")
+
+    click.echo("Data update complete")
+
+    # Show cache stats
+    stats = cache.get_cache_stats()
+    click.echo("\nCache statistics:")
+    for table, count in stats.items():
+        click.echo(f"  {table}: {count} entries")
+
+
+@cli.command('list-models')
+def list_models():
+    """List available factor models."""
+    click.echo("\nAvailable Factor Models:")
+    click.echo("="*60)
+
+    for name, model_class in AVAILABLE_MODELS.items():
+        model = model_class()
+        click.echo(f"\n{name}")
+        click.echo(f"  Name: {model.name}")
+        click.echo(f"  Description: {model.description}")
+
+    click.echo("\n" + "="*60)
+    click.echo("To run a model: python main.py run --model <name>")
+    click.echo("To run all models: python main.py run --all")
+
+
+@cli.command('train-ml')
+@click.option('--tune/--no-tune', default=True, help='Tune hyperparameters')
+@click.option('--trials', default=50, help='Number of tuning trials')
+@click.option('--output', '-o', default=None, help='Model output path')
+def train_ml(tune, trials, output):
+    """Train ML-based factor models."""
+    try:
+        from models.ml_ensemble import MLEnsembleModel
+        from ml.features import FeatureEngineer
+    except ImportError as e:
+        click.echo(f"ML dependencies not available: {e}")
+        click.echo("Install with: pip install xgboost lightgbm optuna")
+        return
+
+    click.echo("Training ML Ensemble model...")
+
+    polygon_client = get_polygon_client()
+    universe_manager = UniverseManager()
+    universe = universe_manager.get_universe('sp500', exclude_financials=True)
+
+    # Load data
+    financials, prices, market_caps, benchmark_prices = load_data(
+        polygon_client, universe, BACKTEST_START_DATE, BACKTEST_END_DATE
+    )
+
+    # Train model
+    feature_engineer = FeatureEngineer()
+    ml_model = MLEnsembleModel(feature_engineer=feature_engineer)
+
+    ml_model.train(
+        financials=financials,
+        prices=prices,
+        market_caps=market_caps,
+        benchmark_prices=benchmark_prices,
+        tune_hyperparams=tune,
+        n_trials=trials
+    )
+
+    # Save model
+    if output:
+        ml_model.save(output)
+    else:
+        ml_model.save()
+
+    click.echo("ML model training complete")
+
+    # Show feature importance
+    importance = ml_model.get_feature_importance()
+    if importance is not None and not importance.empty:
+        click.echo("\nTop 10 Most Important Features:")
+        click.echo(importance.head(10).to_string())
+
+
+@cli.command('current-picks')
+@click.option('--model', '-m', default='magic_formula', help='Model to use')
+@click.option('--n', default=30, help='Number of stocks to pick')
+def current_picks(model, n):
+    """Get current stock recommendations from a model."""
+    if model not in AVAILABLE_MODELS:
+        click.echo(f"Unknown model: {model}")
+        click.echo("Available models: " + ", ".join(AVAILABLE_MODELS.keys()))
+        return
+
+    click.echo(f"Getting current picks from {model}...")
+
+    polygon_client = get_polygon_client()
+    universe_manager = UniverseManager()
+    universe = universe_manager.get_universe('sp500', exclude_financials=True)
+
+    # Load current data
+    today = datetime.now().strftime('%Y-%m-%d')
+    start = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
+
+    financials, prices, market_caps, _ = load_data(
+        polygon_client, universe, start, today
+    )
+
+    # Get picks
+    model_class = AVAILABLE_MODELS[model]
+    model_instance = model_class()
+
+    picks = model_instance.select_portfolio(
+        financials=financials,
+        prices=prices,
+        market_caps=market_caps,
+        n=n
+    )
+
+    click.echo(f"\n{model} Top {n} Picks:")
+    click.echo("="*40)
+
+    for i, ticker in enumerate(picks, 1):
+        sector = universe_manager.get_sector(ticker) or "Unknown"
+        mc = market_caps.get(ticker, 0)
+        mc_str = f"${mc/1e9:.1f}B" if mc else "N/A"
+        click.echo(f"{i:2}. {ticker:6} | {sector:25} | {mc_str}")
+
+
+@cli.command('cache-stats')
+def cache_stats():
+    """Show cache statistics."""
+    cache = CacheManager()
+    stats = cache.get_cache_stats()
+
+    click.echo("\nCache Statistics:")
+    click.echo("="*40)
+    for table, count in stats.items():
+        click.echo(f"  {table}: {count} entries")
+
+
+@cli.command('clear-cache')
+@click.confirmation_option(prompt='Are you sure you want to clear the cache?')
+def clear_cache():
+    """Clear all cached data."""
+    cache = CacheManager()
+    cache.clear_all()
+    click.echo("Cache cleared")
+
+
+# =============================================================================
+# Paper Trading Commands
+# =============================================================================
+
+@cli.group()
+def trade():
+    """Paper/live trading commands."""
+    pass
+
+
+@trade.command('status')
+@click.option('--model', '-m', default='six_factor', help='Model to check status for')
+def trade_status(model):
+    """Show current trading status for a strategy."""
+    try:
+        from trading.alpaca_client import AlpacaClient
+        from trading.strategy_trader import StrategyTrader
+    except ImportError as e:
+        click.echo(f"Trading dependencies not available: {e}")
+        click.echo("Install with: pip install alpaca-py")
+        return
+
+    if model not in AVAILABLE_MODELS:
+        click.echo(f"Unknown model: {model}")
+        click.echo("Available models: " + ", ".join(AVAILABLE_MODELS.keys()))
+        return
+
+    try:
+        alpaca = AlpacaClient(paper=True)
+        polygon = get_polygon_client()
+        model_instance = AVAILABLE_MODELS[model]()
+
+        trader = StrategyTrader(
+            model=model_instance,
+            alpaca_client=alpaca,
+            polygon_client=polygon
+        )
+
+        trader.print_status()
+
+    except Exception as e:
+        click.echo(f"Error: {e}")
+        click.echo("\nMake sure you have set:")
+        click.echo("  - ALPACA_API_KEY")
+        click.echo("  - ALPACA_SECRET_KEY")
+
+
+@trade.command('picks')
+@click.option('--model', '-m', default='six_factor', help='Model to get picks from')
+@click.option('--all', 'all_models', is_flag=True, help='Show picks from all models')
+def trade_picks(model, all_models):
+    """Show current stock picks from a strategy."""
+    try:
+        from trading.alpaca_client import AlpacaClient
+        from trading.strategy_trader import StrategyTrader
+    except ImportError as e:
+        click.echo(f"Trading dependencies not available: {e}")
+        click.echo("Install with: pip install alpaca-py")
+        return
+
+    polygon = get_polygon_client()
+
+    if all_models:
+        for model_name in AVAILABLE_MODELS.keys():
+            model_instance = AVAILABLE_MODELS[model_name]()
+            click.echo(f"\n{'='*50}")
+            click.echo(f"{model_name.upper()}")
+            click.echo('='*50)
+
+            try:
+                # Simplified - just use the current-picks logic
+                universe_manager = UniverseManager()
+                universe = universe_manager.get_universe('sp500', exclude_financials=True)
+
+                today = datetime.now().strftime('%Y-%m-%d')
+                start = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
+
+                financials, prices, market_caps, _ = load_data(
+                    polygon, universe, start, today, show_progress=False
+                )
+
+                picks = model_instance.select_portfolio(
+                    financials=financials,
+                    prices=prices,
+                    market_caps=market_caps,
+                    n=30
+                )
+
+                for i, ticker in enumerate(picks[:10], 1):
+                    click.echo(f"  {i:2}. {ticker}")
+                if len(picks) > 10:
+                    click.echo(f"  ... and {len(picks) - 10} more")
+
+            except Exception as e:
+                click.echo(f"  Error: {e}")
+    else:
+        if model not in AVAILABLE_MODELS:
+            click.echo(f"Unknown model: {model}")
+            return
+
+        try:
+            # For single model, show with Alpaca integration if available
+            alpaca = AlpacaClient(paper=True)
+            model_instance = AVAILABLE_MODELS[model]()
+
+            trader = StrategyTrader(
+                model=model_instance,
+                alpaca_client=alpaca,
+                polygon_client=polygon
+            )
+
+            trader.print_current_picks()
+
+        except Exception as e:
+            click.echo(f"Error: {e}")
+
+
+@trade.command('rebalance')
+@click.option('--model', '-m', default='six_factor', help='Model to rebalance')
+@click.option('--dry-run', is_flag=True, help='Show trades without executing')
+@click.option('--force', is_flag=True, help='Force rebalance even if within threshold')
+def trade_rebalance(model, dry_run, force):
+    """Execute a rebalance for a strategy."""
+    try:
+        from trading.alpaca_client import AlpacaClient
+        from trading.strategy_trader import StrategyTrader
+    except ImportError as e:
+        click.echo(f"Trading dependencies not available: {e}")
+        click.echo("Install with: pip install alpaca-py")
+        return
+
+    if model not in AVAILABLE_MODELS:
+        click.echo(f"Unknown model: {model}")
+        return
+
+    try:
+        alpaca = AlpacaClient(paper=True)
+        polygon = get_polygon_client()
+        model_instance = AVAILABLE_MODELS[model]()
+
+        trader = StrategyTrader(
+            model=model_instance,
+            alpaca_client=alpaca,
+            polygon_client=polygon
+        )
+
+        # Check if market is open
+        if not alpaca.is_market_open() and not dry_run:
+            click.echo("Market is closed. Use --dry-run to see planned trades.")
+            next_open = alpaca.get_next_open()
+            click.echo(f"Market opens: {next_open}")
+            return
+
+        click.echo(f"\nRebalancing {model}...")
+        if dry_run:
+            click.echo("(DRY RUN - no trades will be executed)")
+
+        result = trader.run_rebalance(dry_run=dry_run, force=force)
+
+        if result is None:
+            click.echo("No rebalance needed (portfolio within drift threshold)")
+            click.echo("Use --force to rebalance anyway")
+            return
+
+        click.echo(f"\nRebalance complete:")
+        click.echo(f"  Trades executed: {len(result.trades_executed)}")
+        click.echo(f"  Trades failed: {len(result.trades_failed)}")
+        click.echo(f"  Portfolio value: ${result.portfolio_value_after:,.2f}")
+
+        if result.trades_failed:
+            click.echo("\nFailed trades:")
+            for trade, error in result.trades_failed:
+                click.echo(f"  {trade.side} {trade.symbol}: {error}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+@trade.command('account')
+def trade_account():
+    """Show Alpaca account information."""
+    try:
+        from trading.alpaca_client import AlpacaClient
+    except ImportError as e:
+        click.echo(f"Trading dependencies not available: {e}")
+        click.echo("Install with: pip install alpaca-py")
+        return
+
+    try:
+        alpaca = AlpacaClient(paper=True)
+        account = alpaca.get_account()
+
+        click.echo("\nAlpaca Account Info:")
+        click.echo("=" * 40)
+        click.echo(f"  Status: {account['status']}")
+        click.echo(f"  Paper Trading: Yes")
+        click.echo(f"  Currency: {account['currency']}")
+        click.echo(f"\n  Portfolio Value: ${account['portfolio_value']:,.2f}")
+        click.echo(f"  Cash: ${account['cash']:,.2f}")
+        click.echo(f"  Buying Power: ${account['buying_power']:,.2f}")
+        click.echo(f"  Equity: ${account['equity']:,.2f}")
+        click.echo(f"\n  Day Trades: {account['daytrade_count']}")
+        click.echo(f"  PDT Flag: {account['pattern_day_trader']}")
+
+        # Market status
+        is_open = alpaca.is_market_open()
+        click.echo(f"\n  Market Open: {is_open}")
+        if not is_open:
+            next_open = alpaca.get_next_open()
+            click.echo(f"  Next Open: {next_open}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}")
+        click.echo("\nMake sure you have set:")
+        click.echo("  - ALPACA_API_KEY")
+        click.echo("  - ALPACA_SECRET_KEY")
+
+
+@trade.command('positions')
+def trade_positions():
+    """Show current positions."""
+    try:
+        from trading.alpaca_client import AlpacaClient
+    except ImportError as e:
+        click.echo(f"Trading dependencies not available: {e}")
+        return
+
+    try:
+        alpaca = AlpacaClient(paper=True)
+        positions = alpaca.get_positions()
+        account = alpaca.get_account()
+
+        if not positions:
+            click.echo("\nNo open positions")
+            click.echo(f"Cash available: ${account['cash']:,.2f}")
+            return
+
+        click.echo(f"\nCurrent Positions ({len(positions)}):")
+        click.echo("=" * 70)
+        click.echo(f"{'Symbol':<8} {'Qty':>8} {'Price':>10} {'Value':>12} {'P/L':>10} {'P/L%':>8}")
+        click.echo("-" * 70)
+
+        total_pl = 0
+        for pos in positions:
+            total_pl += pos.unrealized_pl
+            click.echo(
+                f"{pos.symbol:<8} {pos.qty:>8.2f} ${pos.current_price:>9.2f} "
+                f"${pos.market_value:>11,.2f} ${pos.unrealized_pl:>9,.2f} "
+                f"{pos.unrealized_plpc:>7.1%}"
+            )
+
+        click.echo("-" * 70)
+        click.echo(f"{'Total':<8} {'':<8} {'':<10} ${account['equity']:>11,.2f} ${total_pl:>9,.2f}")
+        click.echo(f"\nCash: ${account['cash']:,.2f}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}")
+
+
+@trade.command('close-all')
+@click.confirmation_option(prompt='Are you sure you want to close ALL positions?')
+def trade_close_all():
+    """Close all positions (with confirmation)."""
+    try:
+        from trading.alpaca_client import AlpacaClient
+    except ImportError as e:
+        click.echo(f"Trading dependencies not available: {e}")
+        return
+
+    try:
+        alpaca = AlpacaClient(paper=True)
+
+        if not alpaca.is_market_open():
+            click.echo("Market is closed. Cannot close positions.")
+            return
+
+        click.echo("Closing all positions...")
+        orders = alpaca.close_all_positions()
+
+        click.echo(f"Submitted {len(orders)} close orders")
+        for order in orders:
+            click.echo(f"  {order.side} {order.symbol}: {order.status}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}")
+
+
+if __name__ == '__main__':
+    cli()

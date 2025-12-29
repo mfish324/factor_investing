@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p:*)",
+      "Bash(find:*)",
+      "Bash(cat:*)",
+      "Bash(taskkill:*)",
+      "Bash(python:*)",
+      "Bash(POLYGON_API_KEY='F0xq2G7VyiHKm8vvtNSfPWfgpzgtqhUs' python:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
