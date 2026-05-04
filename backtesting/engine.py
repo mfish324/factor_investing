@@ -150,6 +150,7 @@ class BacktestEngine:
                         prices=prices,
                         market_caps=market_caps,
                         n=self.portfolio_size,
+                        benchmark_prices=benchmark_prices,
                         **kwargs
                     )
 

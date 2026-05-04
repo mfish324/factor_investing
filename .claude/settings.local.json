@@ -6,7 +6,12 @@
       "Bash(cat:*)",
       "Bash(taskkill:*)",
       "Bash(python:*)",
-      "Bash(POLYGON_API_KEY='F0xq2G7VyiHKm8vvtNSfPWfgpzgtqhUs' python:*)"
+      "Bash(POLYGON_API_KEY='F0xq2G7VyiHKm8vvtNSfPWfgpzgtqhUs' python:*)",
+      "Bash(dir /s /b \"C:\\\\Users\\\\matto\\\\projects\\\\factor_investing\\\\results\")",
+      "Bash(wc:*)",
+      "Bash(pip install:*)",
+      "Bash(git rm *)",
+      "Bash(git add *)"
     ],
     "deny": [],
     "ask": []

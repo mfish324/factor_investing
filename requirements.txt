@@ -42,6 +42,12 @@ category_encoders>=2.6.0
 # Visualization enhancements - Optional
 seaborn>=0.12.0
 
+# Technical Analysis
+pandas-ta>=0.3.14b
+
+# Data serialization
+pyarrow>=14.0.0
+
 # Development dependencies (optional)
 # pytest>=7.0.0
 # pytest-cov>=4.0.0

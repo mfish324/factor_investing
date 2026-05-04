@@ -40,10 +40,10 @@ CACHE_EXPIRY_FINANCIALS_DAYS = 7
 DEFAULT_UNIVERSE = "sp500"
 
 # Backtest settings
-DEFAULT_REBALANCE_FREQUENCY = "quarterly"  # monthly, quarterly, annual
+DEFAULT_REBALANCE_FREQUENCY = "monthly"  # monthly, quarterly, annual
 DEFAULT_PORTFOLIO_SIZE = 30
-BACKTEST_START_DATE = "2019-01-01"
-BACKTEST_END_DATE = "2024-01-01"
+BACKTEST_START_DATE = "2025-10-31"
+BACKTEST_END_DATE = "2026-03-12"
 
 # Risk metrics
 RISK_FREE_RATE = 0.04
@@ -78,3 +78,22 @@ POLYGON_RATE_LIMIT_PERIOD = 1.0  # seconds
 
 # Logging
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO")
+
+# =============================================================================
+# Strategy Rotation Settings
+# =============================================================================
+
+# Rotation Strategy Settings
+ROTATION_DEFAULT_METHOD = "weighted"  # binary, weighted, momentum, top_n
+ROTATION_LOOKBACK_DAYS = 63  # ~3 months for momentum calculation
+ROTATION_REBALANCE_FREQ = "weekly"  # daily, weekly, monthly
+ROTATION_MIN_HOLDING_DAYS = 5  # Minimum days before switching strategies
+ROTATION_TRANSACTION_COST_BPS = 10  # Basis points per strategy switch
+
+# Technical Analysis Defaults for Equity Curves
+TA_MACD_FAST = 12
+TA_MACD_SLOW = 26
+TA_MACD_SIGNAL = 9
+TA_RSI_PERIOD = 14
+TA_SMA_FAST = 20
+TA_SMA_SLOW = 50

@@ -26,7 +26,11 @@ from config import (
     BACKTEST_END_DATE,
     DEFAULT_PORTFOLIO_SIZE,
     DEFAULT_REBALANCE_FREQUENCY,
-    RESULTS_DIR
+    RESULTS_DIR,
+    ROTATION_DEFAULT_METHOD,
+    ROTATION_REBALANCE_FREQ,
+    ML_TRAINING_START,
+    MODELS_DIR,
 )
 from data.polygon_client import PolygonClient
 from data.cache import CacheManager
@@ -37,6 +41,9 @@ from models.garp import GARPModel
 from models.quality_value import QualityValueModel
 from models.three_factor import ThreeFactorModel
 from models.six_factor import SixFactorModel
+from models.low_volatility import LowVolatilityModel
+from models.shareholder_yield import ShareholderYieldModel
+from models.ml_ensemble import MLEnsembleModel
 from backtesting.engine import BacktestEngine, run_multiple_backtests
 from backtesting.metrics import BacktestResult
 from analysis.comparison import ModelComparison
@@ -58,6 +65,9 @@ AVAILABLE_MODELS = {
     'quality_value': QualityValueModel,
     'three_factor': ThreeFactorModel,
     'six_factor': SixFactorModel,
+    'low_volatility': LowVolatilityModel,
+    'shareholder_yield': ShareholderYieldModel,
+    'ml_ensemble': lambda: MLEnsembleModel(model_path=str(MODELS_DIR / 'ml_ensemble.joblib')),
 }
 
 
@@ -336,9 +346,9 @@ def train_ml(tune, trials, output):
     universe_manager = UniverseManager()
     universe = universe_manager.get_universe('sp500', exclude_financials=True)
 
-    # Load data
+    # Load data - ML training needs longer history than backtests
     financials, prices, market_caps, benchmark_prices = load_data(
-        polygon_client, universe, BACKTEST_START_DATE, BACKTEST_END_DATE
+        polygon_client, universe, ML_TRAINING_START, BACKTEST_END_DATE
     )
 
     # Train model
@@ -722,6 +732,329 @@ def trade_close_all():
 
     except Exception as e:
         click.echo(f"Error: {e}")
+
+
+# =============================================================================
+# Strategy Rotation Commands
+# =============================================================================
+
+@cli.group()
+def rotation():
+    """Strategy rotation commands for meta-strategy analysis."""
+    pass
+
+
+@rotation.command('export-curves')
+@click.option('--start-date', default='2010-01-01', help='Backtest start date')
+@click.option('--end-date', default=None, help='Backtest end date (default: today)')
+@click.option('--portfolio-size', default=DEFAULT_PORTFOLIO_SIZE, help='Number of stocks')
+@click.option('--rebalance', default=DEFAULT_REBALANCE_FREQUENCY, help='Rebalance frequency')
+@click.option('--format', '-f', default='parquet', type=click.Choice(['parquet', 'csv']), help='Output format')
+def export_curves(start_date, end_date, portfolio_size, rebalance, format):
+    """Export daily equity curves for all strategies."""
+    from backtesting.export import StrategyDataExporter
+
+    if end_date is None:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+
+    click.echo(f"Running backtests from {start_date} to {end_date}")
+    click.echo(f"Rebalance: {rebalance}, Portfolio size: {portfolio_size}")
+
+    # Initialize clients
+    polygon_client = get_polygon_client()
+    universe_manager = UniverseManager()
+
+    # Get universe
+    universe = universe_manager.get_universe('sp500', exclude_financials=True)
+    click.echo(f"Universe: {len(universe)} stocks")
+
+    # Load data
+    financials, prices, market_caps, benchmark_prices = load_data(
+        polygon_client, universe, start_date, end_date
+    )
+
+    # Run backtests for all models
+    results = {}
+    for model_name in AVAILABLE_MODELS.keys():
+        click.echo(f"\nRunning: {model_name}")
+
+        model_class = AVAILABLE_MODELS[model_name]
+        model = model_class()
+
+        engine = BacktestEngine(
+            model=model,
+            start_date=start_date,
+            end_date=end_date,
+            rebalance_freq=rebalance,
+            portfolio_size=portfolio_size
+        )
+
+        result = engine.run(
+            financials=financials,
+            prices=prices,
+            market_caps=market_caps,
+            benchmark_prices=benchmark_prices,
+            show_progress=False
+        )
+
+        results[model_name] = result
+        m = result.metrics
+        click.echo(f"  Return: {m.total_return:.2%}, Sharpe: {m.sharpe_ratio:.2f}")
+
+    # Export curves
+    exporter = StrategyDataExporter()
+    output_path = exporter.export_results(results, format=format)
+
+    click.echo(f"\nExported to: {output_path}")
+    click.echo(f"Strategies: {list(results.keys())}")
+
+
+@rotation.command('analyze-ta')
+@click.option('--strategy', '-s', default=None, help='Specific strategy to analyze (default: all)')
+def analyze_ta(strategy):
+    """Analyze TA signals on strategy equity curves."""
+    try:
+        from analysis.equity_ta import EquityCurveAnalyzer
+        from backtesting.export import StrategyDataExporter
+    except ImportError as e:
+        click.echo(f"Dependencies not available: {e}")
+        click.echo("Install with: pip install pandas-ta")
+        return
+
+    exporter = StrategyDataExporter()
+
+    try:
+        df = exporter.load_strategy_curves()
+    except FileNotFoundError:
+        click.echo("No exported strategy curves found.")
+        click.echo("Run 'rotation export-curves' first.")
+        return
+
+    analyzer = EquityCurveAnalyzer()
+    strategy_values = exporter.get_all_strategy_values(df)
+
+    strategies_to_analyze = [strategy] if strategy else strategy_values.columns.tolist()
+
+    click.echo(f"\nAnalyzing {len(strategies_to_analyze)} strategies...")
+    click.echo("=" * 70)
+
+    for strat in strategies_to_analyze:
+        if strat not in strategy_values.columns:
+            click.echo(f"Strategy not found: {strat}")
+            continue
+
+        equity_curve = strategy_values[strat].dropna()
+        ta_data = analyzer.analyze(equity_curve, strat)
+
+        latest = ta_data.iloc[-1]
+        click.echo(f"\n{strat.upper()}")
+        click.echo("-" * 40)
+        click.echo(f"  Composite Signal: {latest['composite_signal']:.3f}")
+        click.echo(f"  MACD Trend:       {latest.get('macd_trend', 'N/A')}")
+        click.echo(f"  RSI:              {latest.get('rsi', 'N/A'):.1f}")
+        click.echo(f"  RSI Zone:         {latest.get('rsi_zone', 'N/A')}")
+        click.echo(f"  SMA Trend:        {latest.get('sma_trend', 'N/A')}")
+        click.echo(f"  EMA Trend:        {latest.get('ema_trend', 'N/A')}")
+        click.echo(f"  Above SMA50:      {latest.get('price_above_sma_slow', 'N/A')}")
+
+
+@rotation.command('backtest')
+@click.option('--method', '-m', default=ROTATION_DEFAULT_METHOD,
+              type=click.Choice(['binary', 'weighted', 'momentum', 'top_n']),
+              help='Allocation method')
+@click.option('--rebalance', '-r', default=ROTATION_REBALANCE_FREQ,
+              type=click.Choice(['daily', 'weekly', 'monthly']),
+              help='Rebalance frequency')
+@click.option('--cost', default=10, help='Transaction cost in basis points')
+def backtest(method, rebalance, cost):
+    """Backtest the rotation strategy."""
+    try:
+        from backtesting.export import StrategyDataExporter
+        from backtesting.rotation_backtest import RotationBacktester
+        from models.rotation import StrategyRotationModel
+    except ImportError as e:
+        click.echo(f"Dependencies not available: {e}")
+        return
+
+    exporter = StrategyDataExporter()
+
+    try:
+        df = exporter.load_strategy_curves()
+    except FileNotFoundError:
+        click.echo("No exported strategy curves found.")
+        click.echo("Run 'rotation export-curves' first.")
+        return
+
+    strategy_returns = exporter.get_all_strategy_returns(df)
+    strategy_values = exporter.get_all_strategy_values(df)
+
+    click.echo(f"\nRunning rotation backtest...")
+    click.echo(f"Method: {method}")
+    click.echo(f"Rebalance: {rebalance}")
+    click.echo(f"Transaction cost: {cost} bps")
+    click.echo(f"Date range: {strategy_returns.index.min().date()} to {strategy_returns.index.max().date()}")
+
+    rotation_model = StrategyRotationModel(
+        method=method,
+        rebalance_freq=rebalance,
+    )
+
+    backtester = RotationBacktester(
+        rotation_model=rotation_model,
+        transaction_cost_bps=cost,
+    )
+
+    result = backtester.run(strategy_returns, strategy_values)
+
+    # Print results
+    m = result.backtest_result.metrics
+    click.echo("\n" + "=" * 60)
+    click.echo("ROTATION STRATEGY RESULTS")
+    click.echo("=" * 60)
+    click.echo(f"\nPerformance Metrics:")
+    click.echo(f"  Total Return:      {m.total_return:.2%}")
+    click.echo(f"  Annualized Return: {m.annualized_return:.2%}")
+    click.echo(f"  Volatility:        {m.volatility:.2%}")
+    click.echo(f"  Sharpe Ratio:      {m.sharpe_ratio:.2f}")
+    click.echo(f"  Sortino Ratio:     {m.sortino_ratio:.2f}")
+    click.echo(f"  Max Drawdown:      {m.max_drawdown:.2%}")
+    click.echo(f"  Calmar Ratio:      {m.calmar_ratio:.2f}")
+
+    click.echo(f"\nRotation Statistics:")
+    click.echo(f"  Strategy Switches: {result.switch_count}")
+    click.echo(f"  Avg Strategies:    {result.avg_strategies_held:.1f}")
+    click.echo(f"  Total Costs:       ${result.transaction_costs_total:,.2f}")
+
+    click.echo(f"\nBenchmark Comparison:")
+    click.echo(f"  vs Equal Weight:   {result.vs_equal_weight:+.2%}")
+    click.echo(f"  vs Best Strategy:  {result.vs_best_strategy:+.2%}")
+
+    click.echo(f"\n  vs Individual Strategies:")
+    for strat, alpha in sorted(result.vs_individual.items(), key=lambda x: x[1], reverse=True):
+        click.echo(f"    {strat:20s}: {alpha:+.2%}")
+
+
+@rotation.command('signals')
+def signals():
+    """View current TA signals and recommended allocation."""
+    try:
+        from analysis.equity_ta import EquityCurveAnalyzer
+        from backtesting.export import StrategyDataExporter
+        from models.rotation import StrategyRotationModel
+    except ImportError as e:
+        click.echo(f"Dependencies not available: {e}")
+        return
+
+    exporter = StrategyDataExporter()
+
+    try:
+        df = exporter.load_strategy_curves()
+    except FileNotFoundError:
+        click.echo("No exported strategy curves found.")
+        click.echo("Run 'rotation export-curves' first.")
+        return
+
+    analyzer = EquityCurveAnalyzer()
+    strategy_values = exporter.get_all_strategy_values(df)
+
+    # Analyze all strategies
+    strategy_ta = analyzer.analyze_all_strategies(strategy_values)
+    current_signals = analyzer.get_current_signals(strategy_ta)
+
+    click.echo("\nCurrent TA Signals")
+    click.echo("=" * 70)
+    click.echo(f"{'Strategy':<20} {'Signal':>10} {'MACD':>8} {'RSI':>8} {'SMA':>8} {'EMA':>8}")
+    click.echo("-" * 70)
+
+    for strat in current_signals.index:
+        row = current_signals.loc[strat]
+        click.echo(
+            f"{strat:<20} {row['composite_signal']:>10.3f} "
+            f"{row['macd_trend']:>8.0f} {row['rsi']:>8.1f} "
+            f"{row['sma_trend']:>8.0f} {row['ema_trend']:>8.0f}"
+        )
+
+    # Get recommended allocation
+    rotation_model = StrategyRotationModel()
+    allocation = rotation_model.get_current_recommendation(strategy_values)
+
+    click.echo("\n" + "=" * 70)
+    click.echo("RECOMMENDED ALLOCATION")
+    click.echo("=" * 70)
+    click.echo(f"Method: {allocation.method.value}")
+    click.echo(f"Date: {allocation.date}")
+
+    click.echo(f"\n{'Strategy':<20} {'Allocation':>12}")
+    click.echo("-" * 35)
+    for strat, weight in sorted(allocation.allocations.items(), key=lambda x: x[1], reverse=True):
+        if weight > 0:
+            click.echo(f"{strat:<20} {weight:>11.1%}")
+
+
+@rotation.command('compare')
+@click.option('--output', '-o', default=None, help='Output directory for report')
+def compare(output):
+    """Compare rotation methods vs benchmarks."""
+    try:
+        from backtesting.export import StrategyDataExporter
+        from backtesting.rotation_backtest import compare_rotation_methods, generate_rotation_comparison_report
+    except ImportError as e:
+        click.echo(f"Dependencies not available: {e}")
+        return
+
+    exporter = StrategyDataExporter()
+
+    try:
+        df = exporter.load_strategy_curves()
+    except FileNotFoundError:
+        click.echo("No exported strategy curves found.")
+        click.echo("Run 'rotation export-curves' first.")
+        return
+
+    strategy_returns = exporter.get_all_strategy_returns(df)
+    strategy_values = exporter.get_all_strategy_values(df)
+
+    click.echo("\nComparing rotation methods...")
+    click.echo("=" * 70)
+
+    results = compare_rotation_methods(strategy_returns, strategy_values)
+
+    # Generate comparison table
+    comparison = generate_rotation_comparison_report(results)
+
+    click.echo("\nRotation Method Comparison:")
+    click.echo(comparison.to_string(index=False))
+
+    # Also show individual strategy results
+    click.echo("\n" + "=" * 70)
+    click.echo("Individual Strategy Results (for comparison):")
+    click.echo("-" * 70)
+
+    for strategy in strategy_returns.columns:
+        strat_returns = strategy_returns[strategy]
+        total_return = (1 + strat_returns).prod() - 1
+        ann_return = (1 + total_return) ** (252 / len(strat_returns)) - 1
+        volatility = strat_returns.std() * (252 ** 0.5)
+        sharpe = (strat_returns.mean() - 0.04/252) / strat_returns.std() * (252 ** 0.5) if strat_returns.std() > 0 else 0
+
+        click.echo(f"{strategy:<20} Return: {total_return:>8.2%}  Ann: {ann_return:>8.2%}  Vol: {volatility:>8.2%}  Sharpe: {sharpe:>6.2f}")
+
+    # Equal weight benchmark
+    ew_returns = strategy_returns.mean(axis=1)
+    ew_total = (1 + ew_returns).prod() - 1
+    ew_ann = (1 + ew_total) ** (252 / len(ew_returns)) - 1
+    ew_vol = ew_returns.std() * (252 ** 0.5)
+    ew_sharpe = (ew_returns.mean() - 0.04/252) / ew_returns.std() * (252 ** 0.5) if ew_returns.std() > 0 else 0
+
+    click.echo("-" * 70)
+    click.echo(f"{'Equal Weight':<20} Return: {ew_total:>8.2%}  Ann: {ew_ann:>8.2%}  Vol: {ew_vol:>8.2%}  Sharpe: {ew_sharpe:>6.2f}")
+
+    # Save report if output specified
+    if output:
+        output_dir = Path(output)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        comparison.to_csv(output_dir / 'rotation_comparison.csv', index=False)
+        click.echo(f"\nReport saved to {output_dir / 'rotation_comparison.csv'}")
 
 
 if __name__ == '__main__':

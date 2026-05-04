@@ -149,7 +149,9 @@ class FeatureEngineer:
         for df in dfs_to_join[1:]:
             combined = combined.join(df, how='outer')
 
-        self.feature_names_ = combined.columns.tolist()
+        # Only set feature_names_ if not already fitted (avoid clobbering during inference)
+        if not self._fitted:
+            self.feature_names_ = combined.columns.tolist()
 
         return combined
 
@@ -258,6 +260,13 @@ class FeatureEngineer:
         # Store feature names before imputation
         self.feature_names_ = X.columns.tolist()
 
+        # Drop columns that are entirely NaN (imputer can't handle them)
+        all_nan_cols = X.columns[X.isna().all()]
+        if len(all_nan_cols) > 0:
+            logger.warning(f"Dropping all-NaN columns: {all_nan_cols.tolist()}")
+            X = X.drop(columns=all_nan_cols)
+            self.feature_names_ = X.columns.tolist()
+
         # Impute missing values
         X_imputed = self.imputer.fit_transform(X)
 
@@ -331,7 +340,10 @@ class FeatureEngineer:
                 else:
                     start_idx = -1
             else:
-                start_idx = -holding_period - 1 if len(close) > holding_period + 1 else 0
+                if len(close) > holding_period + 1:
+                    start_idx = len(close) - holding_period - 1
+                else:
+                    start_idx = 0
 
             end_idx = start_idx + holding_period
 
