@@ -24,7 +24,11 @@
       "WebFetch(domain:pypi.org)",
       "WebFetch(domain:github.com)",
       "Bash(tee results/full_history_2019_2026_v3/margin/run.log)",
-      "Bash(sqlite3 *)"
+      "Bash(sqlite3 *)",
+      "Bash(curl -s http://localhost:8502/_stcore/health)",
+      "Bash(curl -s http://localhost:8502/)",
+      "Bash(pkill -f \"streamlit run dashboard/app.py\")",
+      "PowerShell(Get-NetTCPConnection *)"
     ],
     "deny": [],
     "ask": []

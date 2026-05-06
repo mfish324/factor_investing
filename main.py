@@ -1239,6 +1239,20 @@ def shadow_status():
         )
 
 
+@shadow.command('dashboard')
+@click.option('--port', default=8501, type=int, help='Streamlit port')
+def shadow_dashboard(port):
+    """Launch the Streamlit dashboard against the shadow DB."""
+    import subprocess
+    app = Path(__file__).resolve().parent / "dashboard" / "app.py"
+    if not app.exists():
+        click.echo(f"dashboard/app.py not found at {app}")
+        return
+    cmd = [sys.executable, "-m", "streamlit", "run", str(app), "--server.port", str(port)]
+    click.echo(f"Launching dashboard: {' '.join(cmd)}")
+    subprocess.run(cmd)
+
+
 @shadow.command('curves')
 @click.option('-m', '--model', 'model_name', required=True, help='Model to export')
 @click.option('--output', '-o', default=None, help='Output CSV path (default stdout summary)')

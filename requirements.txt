@@ -48,6 +48,9 @@ pandas-ta>=0.3.14b
 # Data serialization
 pyarrow>=14.0.0
 
+# Dashboard
+streamlit>=1.32.0
+
 # Development dependencies (optional)
 # pytest>=7.0.0
 # pytest-cov>=4.0.0
