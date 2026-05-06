@@ -23,7 +23,8 @@
       "WebSearch",
       "WebFetch(domain:pypi.org)",
       "WebFetch(domain:github.com)",
-      "Bash(tee results/full_history_2019_2026_v3/margin/run.log)"
+      "Bash(tee results/full_history_2019_2026_v3/margin/run.log)",
+      "Bash(sqlite3 *)"
     ],
     "deny": [],
     "ask": []

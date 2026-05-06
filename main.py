@@ -1085,5 +1085,180 @@ def compare(output):
         click.echo(f"\nReport saved to {output_dir / 'rotation_comparison.csv'}")
 
 
+# =============================================================================
+# Shadow Tracking Commands (parallel-strategy monitoring)
+# =============================================================================
+
+@cli.group()
+def shadow():
+    """Shadow-track all strategies in parallel for the dashboard / rotation engine."""
+    pass
+
+
+@shadow.command('init')
+def shadow_init():
+    """Create or reset the shadow-tracking SQLite schema."""
+    from tracking import ShadowDB
+    db = ShadowDB()
+    click.echo(f"Shadow DB ready at {db.db_path}")
+
+
+@shadow.command('backfill')
+@click.option('--start-date', default='2019-01-01', help='Backfill start date')
+@click.option('--end-date', default=None, help='Backfill end date (default: today)')
+@click.option('-m', '--model', 'models', multiple=True, help='Subset of models (default: all)')
+@click.option('--portfolio-size', default=DEFAULT_PORTFOLIO_SIZE, help='Number of stocks')
+@click.option('--rebalance', default=DEFAULT_REBALANCE_FREQUENCY, help='Rebalance frequency')
+def shadow_backfill(start_date, end_date, models, portfolio_size, rebalance):
+    """Populate the shadow DB with full historical equity curves for each strategy."""
+    from tracking import ShadowDB
+    from tracking.snapshot import backfill_strategy
+
+    if end_date is None:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+
+    targets = list(models) if models else list(AVAILABLE_MODELS.keys())
+    for m in targets:
+        if m not in AVAILABLE_MODELS:
+            click.echo(f"Unknown model: {m}")
+            return
+
+    click.echo(f"Backfill {start_date} -> {end_date}, models: {', '.join(targets)}")
+
+    polygon_client = get_polygon_client()
+    universe = UniverseManager().get_universe('sp500', exclude_financials=True)
+    financials, prices, market_caps, benchmark_prices, shares_outstanding = load_data(
+        polygon_client, universe, start_date, end_date
+    )
+    click.echo(f"Universe loaded: {len(prices)} prices, {len(market_caps)} market caps")
+
+    db = ShadowDB()
+    for name in targets:
+        click.echo(f"\nBackfilling {name}...")
+        model = AVAILABLE_MODELS[name]()
+        result = backfill_strategy(
+            db=db,
+            strategy_name=name,
+            model=model,
+            financials=financials,
+            prices=prices,
+            market_caps=market_caps,
+            benchmark_prices=benchmark_prices,
+            shares_outstanding=shares_outstanding,
+            start_date=start_date,
+            end_date=end_date,
+            rebalance_freq=rebalance,
+            portfolio_size=portfolio_size,
+            show_progress=False,
+        )
+        m = result.metrics
+        click.echo(
+            f"  {name}: total {m.total_return:.2%}, Sharpe {m.sharpe_ratio:.2f}, "
+            f"final ${result.final_value:,.0f}"
+        )
+    click.echo(f"\nShadow DB at {db.db_path}")
+
+
+@shadow.command('update')
+@click.option('--target-date', default=None, help='Date to update through (default: today)')
+@click.option('-m', '--model', 'models', multiple=True, help='Subset of models (default: all)')
+@click.option('--portfolio-size', default=DEFAULT_PORTFOLIO_SIZE, help='Number of stocks')
+@click.option('--rebalance', default=DEFAULT_REBALANCE_FREQUENCY, help='Rebalance frequency')
+def shadow_update(target_date, models, portfolio_size, rebalance):
+    """Incremental daily update for the shadow DB."""
+    from tracking import ShadowDB
+    from tracking.snapshot import update_strategy_daily
+
+    if target_date is None:
+        target_date = datetime.now().strftime('%Y-%m-%d')
+
+    db = ShadowDB()
+    targets = list(models) if models else db.list_strategies()
+    if not targets:
+        click.echo("No strategies found in shadow DB. Run `shadow backfill` first.")
+        return
+
+    earliest_existing = None
+    for name in targets:
+        latest = db.get_latest_equity_date(name)
+        if latest and (earliest_existing is None or latest < earliest_existing):
+            earliest_existing = latest
+    buffer_start = (
+        pd.Timestamp(earliest_existing) - pd.Timedelta(days=60)
+    ).strftime('%Y-%m-%d') if earliest_existing else '2019-01-01'
+
+    polygon_client = get_polygon_client()
+    universe = UniverseManager().get_universe('sp500', exclude_financials=True)
+    financials, prices, market_caps, benchmark_prices, shares_outstanding = load_data(
+        polygon_client, universe, buffer_start, target_date
+    )
+
+    for name in targets:
+        if name not in AVAILABLE_MODELS:
+            click.echo(f"Skipping unknown model {name}")
+            continue
+        model = AVAILABLE_MODELS[name]()
+        out = update_strategy_daily(
+            db=db,
+            strategy_name=name,
+            model=model,
+            financials=financials,
+            prices=prices,
+            market_caps=market_caps,
+            benchmark_prices=benchmark_prices,
+            shares_outstanding=shares_outstanding,
+            target_date=target_date,
+            rebalance_freq=rebalance,
+            portfolio_size=portfolio_size,
+        )
+        if out.get('skipped'):
+            click.echo(f"  {name}: skipped ({out.get('reason')})")
+        else:
+            click.echo(f"  {name}: +{out.get('rows_added', 0)} rows through {target_date}")
+
+
+@shadow.command('status')
+def shadow_status():
+    """Show one-line summary per strategy currently in the shadow DB."""
+    from tracking import ShadowDB
+    db = ShadowDB()
+    summary = db.summary()
+    if summary.empty:
+        click.echo("Shadow DB is empty. Run `shadow backfill` first.")
+        return
+
+    click.echo(f"\n{'Strategy':<22} {'Last':<12} {'Equity':>14} {'Total Ret':>10} {'Worst DD':>10} {'Days':>6}")
+    click.echo("-" * 80)
+    for _, row in summary.iterrows():
+        click.echo(
+            f"{row['strategy']:<22} {row['last_date']:<12} "
+            f"${row['last_equity']:>12,.0f}   "
+            f"{row['last_cumulative_return']:>9.2%} "
+            f"{row['worst_drawdown']:>9.2%} "
+            f"{int(row['n_days']):>6d}"
+        )
+
+
+@shadow.command('curves')
+@click.option('-m', '--model', 'model_name', required=True, help='Model to export')
+@click.option('--output', '-o', default=None, help='Output CSV path (default stdout summary)')
+@click.option('--start-date', default=None, help='Start date filter')
+@click.option('--end-date', default=None, help='End date filter')
+def shadow_curves(model_name, output, start_date, end_date):
+    """Export the equity curve for one strategy."""
+    from tracking import ShadowDB
+    db = ShadowDB()
+    df = db.get_equity_curve(model_name, start=start_date, end=end_date)
+    if df.empty:
+        click.echo(f"No data for {model_name}.")
+        return
+    if output:
+        df.to_csv(output, index=False)
+        click.echo(f"Saved {len(df)} rows to {output}")
+    else:
+        click.echo(df.tail(20).to_string(index=False))
+        click.echo(f"\n({len(df)} total rows)")
+
+
 if __name__ == '__main__':
     cli()
