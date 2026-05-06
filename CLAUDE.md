@@ -8,8 +8,9 @@ A backtesting and paper trading system for factor-based stock selection strategi
 **Data:** Polygon.io API (financials, prices, market caps, insider/institutional data)
 **ML:** XGBoost, LightGBM, scikit-learn, Optuna (hyperparameter tuning)
 **Trading:** Alpaca API (paper trading)
-**Viz:** Plotly (interactive HTML charts)
+**Viz:** Plotly (interactive HTML charts), Streamlit (live dashboard)
 **CLI:** Click
+**Storage:** SQLite (`data/cache.db` for Polygon responses, `data/shadow.db` for tracker)
 
 ## Project Structure
 
@@ -48,13 +49,21 @@ factor_investing/
 ├── backtesting/
 │   ├── engine.py            # BacktestEngine (walk-forward simulation)
 │   ├── metrics.py           # PerformanceMetrics, Sharpe, drawdown, alpha/beta
+│   ├── point_in_time.py     # PointInTimeView: structural look-ahead protection
 │   ├── export.py            # Strategy curve export (parquet/csv)
 │   └── rotation_backtest.py # Rotation strategy backtester
 ├── analysis/
 │   ├── comparison.py        # ModelComparison (correlations, drawdowns, stats)
 │   ├── visualization.py     # Plotly chart generation
 │   └── equity_ta.py         # TA signals on equity curves (MACD, RSI, SMA)
+├── tracking/                # Phase 1: shadow tracker for parallel-strategy monitoring
+│   ├── shadow_db.py         # SQLite store: equity, holdings, picks, meta
+│   └── snapshot.py          # backfill_strategy() + update_strategy_daily()
+├── dashboard/               # Phase 2: Streamlit dashboard
+│   └── app.py               # Reads shadow.db, renders curves/regimes/picks/correlations
 ├── trading/                 # Alpaca paper trading integration
+├── scripts/                 # One-off analysis scripts (margin, blends, determinism)
+├── tests/                   # pytest unit tests (currently: PointInTimeView)
 └── results/                 # Output reports, charts, exported curves
 ```
 
@@ -85,15 +94,39 @@ python main.py rotation backtest
 python main.py trade status
 python main.py trade picks --all
 python main.py trade rebalance --model six_factor --dry-run
+
+# Shadow tracker + dashboard
+python main.py shadow init                  # one-time DB init
+python main.py shadow backfill               # populate from BacktestEngine
+python main.py shadow update                 # incremental daily refresh
+python main.py shadow status                 # one-line summary per strategy
+python main.py shadow dashboard              # launch Streamlit dashboard
+
+# Tests
+pytest tests/ -v
 ```
 
 ## Key Architecture
 
 - **Factor calculators** (`factors/`) compute raw metrics per stock. Each has `calculate()` for single stock, `calculate_universe()` for batch, and a `*_composite_score()` method.
 - **Models** (`models/`) implement `score()` returning a Series (higher = better). Base class provides `rank()` and `select_portfolio()`.
-- **BacktestEngine** does walk-forward simulation: on each rebalance date, calls `model.select_portfolio()`, then tracks daily P&L.
-- **ML pipeline** uses `FeatureEngineer` to build feature matrix from all factor categories, trains XGBoost with Optuna, saves to joblib. The fitted scaler/imputer are serialized with the model.
+- **BacktestEngine** does walk-forward simulation: on each rebalance date, builds a `PointInTimeView` of prices and financials so the model only sees data dated `<= rebalance_date`, calls `model.select_portfolio()`, then tracks daily P&L. Market caps are recomputed at each rebalance from `shares_outstanding × price[as_of_date]` (constant-shares approximation).
+- **PointInTimeView** (`backtesting/point_in_time.py`) is the architectural look-ahead guard. Models receive a read-only dict-like view that physically drops rows after `as_of`. The bug class behind the May 2026 look-ahead incident cannot recur. Locked in by `tests/test_point_in_time.py`.
+- **ML pipeline** uses `FeatureEngineer` to build feature matrix from all factor categories, trains XGBoost with Optuna, saves to joblib. The fitted scaler/imputer are serialized with the model. **The current `models/saved/ml_ensemble.joblib` was trained pre-fix and underperforms on honest data — needs retraining.**
+- **Shadow tracker** (`tracking/`) maintains a parallel SQLite DB (`data/shadow.db`) with daily equity curves, holdings, and picks for every strategy. Decoupled from the real Alpaca account: only one strategy (or a blend) actually executes; the rest are tracked for the dashboard and rotation engine.
+- **Dashboard** (`dashboard/app.py`) is a Streamlit app that reads `shadow.db` and renders performance summary, cumulative return / drawdown charts, regime signals (20/50 SMA + RSI), correlation heatmap, and current picks.
 - Data is cached in SQLite (`data/cache.db`) to avoid redundant API calls.
+
+### Look-ahead bias history (May 2026)
+
+The pre-`b68bd5a` engine passed the full prices dict (through the cache tip = today's intraday quote on market days) to `model.select_portfolio()` at every rebalance. Models using latest price (market cap, P/E, momentum) silently consumed future data, and results varied across runs at different times of day because Polygon's intraday quote changed.
+
+The fix is in three layers:
+1. `main.py load_data` truncates prices and benchmark to `<= end_date` at load.
+2. `BacktestEngine.run` constructs `PointInTimeView` per rebalance for prices and financials; recomputes market caps from `shares × asof_price`.
+3. `tests/test_point_in_time.py` locks the as-of guarantee architecturally.
+
+Reports and shadow-DB data generated from commit `b68bd5a` onward are honest. Anything before that has bias on absolute returns; relative model rankings are still informative but not authoritative.
 
 ## Environment Variables
 
