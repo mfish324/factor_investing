@@ -22,7 +22,7 @@ logging.basicConfig(level=logging.WARNING, format='%(levelname)s - %(message)s')
 START_DATE = "2019-01-01"
 END_DATE = "2026-05-01"
 
-def run_once(financials, prices, market_caps, benchmark_prices, label):
+def run_once(financials, prices, market_caps, benchmark_prices, shares_outstanding, label):
     model = SixFactorModel()
     engine = BacktestEngine(
         model=model,
@@ -36,6 +36,7 @@ def run_once(financials, prices, market_caps, benchmark_prices, label):
         prices=prices,
         market_caps=market_caps,
         benchmark_prices=benchmark_prices,
+        shares_outstanding=shares_outstanding,
         show_progress=False,
     )
     print(f"[{label}] Total: {result.metrics.total_return:.4%}  Sharpe: {result.metrics.sharpe_ratio:.4f}  Vol: {result.metrics.volatility:.4%}  Final: ${result.final_value:,.2f}")
@@ -47,14 +48,14 @@ def main():
 
     polygon_client = get_polygon_client()
     universe = UniverseManager().get_universe('sp500', exclude_financials=True)
-    financials, prices, market_caps, benchmark_prices = load_data(
+    financials, prices, market_caps, benchmark_prices, shares_outstanding = load_data(
         polygon_client, universe, START_DATE, END_DATE
     )
 
     # Run 3 times in same process
-    r1 = run_once(financials, prices, market_caps, benchmark_prices, "Run 1")
-    r2 = run_once(financials, prices, market_caps, benchmark_prices, "Run 2")
-    r3 = run_once(financials, prices, market_caps, benchmark_prices, "Run 3")
+    r1 = run_once(financials, prices, market_caps, benchmark_prices, shares_outstanding, "Run 1")
+    r2 = run_once(financials, prices, market_caps, benchmark_prices, shares_outstanding, "Run 2")
+    r3 = run_once(financials, prices, market_caps, benchmark_prices, shares_outstanding, "Run 3")
 
     # Compare daily returns
     diff_12 = (r1.returns - r2.returns).abs().max()

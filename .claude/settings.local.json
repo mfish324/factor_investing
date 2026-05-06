@@ -17,7 +17,8 @@
       "Bash(tee results/full_history_2019_2026/run.log)",
       "Bash(tee results/full_history_2019_2026/blend/run.log)",
       "Bash(tee results/diagnostic/run.log)",
-      "Bash(tee results/diagnostic2/run.log)"
+      "Bash(tee results/diagnostic2/run.log)",
+      "Bash(tee results/postfix_check/run.log)"
     ],
     "deny": [],
     "ask": []

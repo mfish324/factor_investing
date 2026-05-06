@@ -47,7 +47,7 @@ BLEND_RATIOS = [
 ]
 
 
-def run_model(model_class, financials, prices, market_caps, benchmark_prices):
+def run_model(model_class, financials, prices, market_caps, benchmark_prices, shares_outstanding):
     model = model_class()
     engine = BacktestEngine(
         model=model,
@@ -61,6 +61,7 @@ def run_model(model_class, financials, prices, market_caps, benchmark_prices):
         prices=prices,
         market_caps=market_caps,
         benchmark_prices=benchmark_prices,
+        shares_outstanding=shares_outstanding,
     )
 
 
@@ -85,18 +86,18 @@ def main():
     universe = UniverseManager().get_universe('sp500', exclude_financials=True)
     logger.info(f"Universe: {len(universe)} stocks")
 
-    financials, prices, market_caps, benchmark_prices = load_data(
+    financials, prices, market_caps, benchmark_prices, shares_outstanding = load_data(
         polygon_client, universe, START_DATE, END_DATE
     )
     valid = set(financials) & set(prices) & set(market_caps)
     logger.info(f"Stocks with complete data: {len(valid)}")
 
     logger.info("Running Six Factor...")
-    sf_result = run_model(SixFactorModel, financials, prices, market_caps, benchmark_prices)
+    sf_result = run_model(SixFactorModel, financials, prices, market_caps, benchmark_prices, shares_outstanding)
     logger.info(f"  Six Factor: {sf_result.metrics.total_return:.2%} total, {sf_result.metrics.sharpe_ratio:.2f} Sharpe")
 
     logger.info("Running Low Volatility...")
-    lv_result = run_model(LowVolatilityModel, financials, prices, market_caps, benchmark_prices)
+    lv_result = run_model(LowVolatilityModel, financials, prices, market_caps, benchmark_prices, shares_outstanding)
     logger.info(f"  Low Volatility: {lv_result.metrics.total_return:.2%} total, {lv_result.metrics.sharpe_ratio:.2f} Sharpe")
 
     sf = sf_result.returns

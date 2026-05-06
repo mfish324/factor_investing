@@ -108,38 +108,64 @@ def load_data(
         except Exception as e:
             logger.warning(f"Failed to load financials for {ticker}: {e}")
 
-    # Load prices
+    # Load prices, truncated to end_date (cache may extend past it; preventing
+    # that leakage is what makes results reproducible across runs).
+    end_ts = pd.Timestamp(end_date)
     prices = {}
     iterator = tqdm(universe, desc="Loading prices") if show_progress else universe
     for ticker in iterator:
         try:
             df = polygon_client.get_prices(ticker, start_date, end_date)
+            if df.empty:
+                continue
+            if 'date' in df.columns:
+                df = df[pd.to_datetime(df['date']) <= end_ts]
+            else:
+                df = df.loc[df.index <= end_ts]
             if not df.empty:
                 prices[ticker] = df
         except Exception as e:
             logger.warning(f"Failed to load prices for {ticker}: {e}")
 
-    # Get market caps
+    # Get market caps. Polygon returns *today's* snapshot, so we also derive an
+    # implied shares_outstanding (mc / latest_cached_price). The engine uses
+    # shares to compute mc as-of each rebalance date, removing look-ahead bias
+    # from market-cap-derived signals (P/E, EV/EBITDA, etc.).
     market_caps = {}
+    shares_outstanding = {}
     iterator = tqdm(universe, desc="Loading market caps") if show_progress else universe
     for ticker in iterator:
         try:
             mc = polygon_client.get_market_cap(ticker)
-            if mc:
-                market_caps[ticker] = mc
+            if not mc:
+                continue
+            market_caps[ticker] = mc
+            df = prices.get(ticker)
+            if df is None or df.empty or 'close' not in df.columns:
+                continue
+            latest_price = df.iloc[-1]['close']
+            if latest_price and latest_price > 0:
+                shares_outstanding[ticker] = mc / float(latest_price)
         except Exception as e:
             pass
 
-    # Load benchmark (SPY)
+    # Load benchmark (SPY), also truncated to end_date
     benchmark_prices = None
     try:
         benchmark_prices = polygon_client.get_prices('SPY', start_date, end_date)
+        if benchmark_prices is not None and not benchmark_prices.empty:
+            if 'date' in benchmark_prices.columns:
+                benchmark_prices = benchmark_prices[
+                    pd.to_datetime(benchmark_prices['date']) <= end_ts
+                ]
+            else:
+                benchmark_prices = benchmark_prices.loc[benchmark_prices.index <= end_ts]
     except Exception as e:
         logger.warning(f"Failed to load benchmark prices: {e}")
 
     logger.info(f"Loaded: {len(financials)} financials, {len(prices)} prices, {len(market_caps)} market caps")
 
-    return financials, prices, market_caps, benchmark_prices
+    return financials, prices, market_caps, benchmark_prices, shares_outstanding
 
 
 @click.group()
@@ -188,7 +214,7 @@ def run(run_all, model, start_date, end_date, portfolio_size, rebalance, output)
     click.echo(f"Universe: {len(universe)} stocks")
 
     # Load data
-    financials, prices, market_caps, benchmark_prices = load_data(
+    financials, prices, market_caps, benchmark_prices, shares_outstanding = load_data(
         polygon_client, universe, start_date, end_date
     )
 
@@ -218,7 +244,8 @@ def run(run_all, model, start_date, end_date, portfolio_size, rebalance, output)
             financials=financials,
             prices=prices,
             market_caps=market_caps,
-            benchmark_prices=benchmark_prices
+            benchmark_prices=benchmark_prices,
+            shares_outstanding=shares_outstanding,
         )
 
         results[model_name] = result
@@ -347,7 +374,7 @@ def train_ml(tune, trials, output):
     universe = universe_manager.get_universe('sp500', exclude_financials=True)
 
     # Load data - ML training needs longer history than backtests
-    financials, prices, market_caps, benchmark_prices = load_data(
+    financials, prices, market_caps, benchmark_prices, _ = load_data(
         polygon_client, universe, ML_TRAINING_START, BACKTEST_END_DATE
     )
 
@@ -399,7 +426,7 @@ def current_picks(model, n):
     today = datetime.now().strftime('%Y-%m-%d')
     start = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
 
-    financials, prices, market_caps, _ = load_data(
+    financials, prices, market_caps, _, _ = load_data(
         polygon_client, universe, start, today
     )
 
@@ -522,7 +549,7 @@ def trade_picks(model, all_models):
                 today = datetime.now().strftime('%Y-%m-%d')
                 start = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
 
-                financials, prices, market_caps, _ = load_data(
+                financials, prices, market_caps, _, _ = load_data(
                     polygon, universe, start, today, show_progress=False
                 )
 
@@ -769,7 +796,7 @@ def export_curves(start_date, end_date, portfolio_size, rebalance, format):
     click.echo(f"Universe: {len(universe)} stocks")
 
     # Load data
-    financials, prices, market_caps, benchmark_prices = load_data(
+    financials, prices, market_caps, benchmark_prices, shares_outstanding = load_data(
         polygon_client, universe, start_date, end_date
     )
 
@@ -794,6 +821,7 @@ def export_curves(start_date, end_date, portfolio_size, rebalance, format):
             prices=prices,
             market_caps=market_caps,
             benchmark_prices=benchmark_prices,
+            shares_outstanding=shares_outstanding,
             show_progress=False
         )
 

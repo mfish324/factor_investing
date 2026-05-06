@@ -72,6 +72,7 @@ class BacktestEngine:
         market_caps: Dict[str, float] = None,
         benchmark_prices: pd.DataFrame = None,
         show_progress: bool = True,
+        shares_outstanding: Dict[str, float] = None,
         **kwargs
     ) -> BacktestResult:
         """
@@ -143,14 +144,24 @@ class BacktestEngine:
                     current_prices[ticker] = price
 
             if is_rebalance and current_prices:
+                # Truncate prices and market caps to as-of the rebalance date.
+                # Without this, models see future prices through the cache tip
+                # and select stocks using look-ahead data.
+                prices_asof = self._truncate_prices_asof(prices, date)
+                benchmark_asof = self._truncate_one_price_df_asof(benchmark_prices, date)
+                if shares_outstanding:
+                    market_caps_asof = self._market_caps_asof(prices_asof, shares_outstanding)
+                else:
+                    market_caps_asof = market_caps
+
                 # Select new portfolio
                 try:
                     new_holdings = self.model.select_portfolio(
                         financials=financials,
-                        prices=prices,
-                        market_caps=market_caps,
+                        prices=prices_asof,
+                        market_caps=market_caps_asof,
                         n=self.portfolio_size,
-                        benchmark_prices=benchmark_prices,
+                        benchmark_prices=benchmark_asof,
                         **kwargs
                     )
 
@@ -325,6 +336,54 @@ class BacktestEngine:
         returns = returns.reindex(trading_days)
 
         return returns.fillna(0)
+
+    @staticmethod
+    def _truncate_one_price_df_asof(df, asof: pd.Timestamp):
+        """Truncate a single prices DataFrame to rows on or before asof."""
+        if df is None or df.empty:
+            return df
+        if 'date' in df.columns:
+            return df[pd.to_datetime(df['date']) <= asof]
+        return df.loc[df.index <= asof]
+
+    @classmethod
+    def _truncate_prices_asof(cls, prices: Dict[str, pd.DataFrame], asof) -> Dict[str, pd.DataFrame]:
+        """Truncate every ticker's prices to rows on or before asof."""
+        ts = pd.Timestamp(asof)
+        out = {}
+        for ticker, df in prices.items():
+            truncated = cls._truncate_one_price_df_asof(df, ts)
+            if truncated is not None and not truncated.empty:
+                out[ticker] = truncated
+        return out
+
+    @staticmethod
+    def _market_caps_asof(
+        prices_asof: Dict[str, pd.DataFrame],
+        shares_outstanding: Dict[str, float],
+    ) -> Dict[str, float]:
+        """
+        Compute market cap as of the rebalance date: shares * price[asof_date].
+
+        Holds shares constant at the load-time implied value. This ignores
+        buybacks/issuances over the backtest period — the right tradeoff for now;
+        the alternative is per-rebalance polygon shares queries.
+        """
+        if not shares_outstanding:
+            return {}
+        out = {}
+        for ticker, shares in shares_outstanding.items():
+            df = prices_asof.get(ticker)
+            if df is None or df.empty or shares is None or shares <= 0:
+                continue
+            if 'close' in df.columns:
+                asof_price = df.iloc[-1]['close']
+            else:
+                continue
+            if pd.isna(asof_price) or asof_price <= 0:
+                continue
+            out[ticker] = float(shares) * float(asof_price)
+        return out
 
     def _empty_result(self) -> BacktestResult:
         """Return empty result on failure."""
