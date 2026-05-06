@@ -12,6 +12,7 @@ from tqdm import tqdm
 from models.base import FactorModel
 from .portfolio import Portfolio
 from .metrics import BacktestResult, PerformanceMetrics, calculate_metrics
+from .point_in_time import PointInTimeView, truncate_one
 from config import (
     BACKTEST_START_DATE,
     BACKTEST_END_DATE,
@@ -144,21 +145,25 @@ class BacktestEngine:
                     current_prices[ticker] = price
 
             if is_rebalance and current_prices:
-                # Truncate prices and market caps to as-of the rebalance date.
-                # Without this, models see future prices through the cache tip
-                # and select stocks using look-ahead data.
-                prices_asof = self._truncate_prices_asof(prices, date)
-                benchmark_asof = self._truncate_one_price_df_asof(benchmark_prices, date)
+                # Wrap prices and financials in point-in-time views so the model
+                # cannot reach data dated after the rebalance date. Future rows
+                # are dropped at view construction; this is the architectural
+                # guarantee against look-ahead bias.
+                prices_view = PointInTimeView(prices, as_of=date, date_column='date')
+                financials_view = PointInTimeView(
+                    financials, as_of=date, date_column='filing_date'
+                )
+                benchmark_asof = truncate_one(benchmark_prices, date)
                 if shares_outstanding:
-                    market_caps_asof = self._market_caps_asof(prices_asof, shares_outstanding)
+                    market_caps_asof = self._market_caps_asof(prices_view, shares_outstanding)
                 else:
                     market_caps_asof = market_caps
 
                 # Select new portfolio
                 try:
                     new_holdings = self.model.select_portfolio(
-                        financials=financials,
-                        prices=prices_asof,
+                        financials=financials_view,
+                        prices=prices_view,
                         market_caps=market_caps_asof,
                         n=self.portfolio_size,
                         benchmark_prices=benchmark_asof,
@@ -338,48 +343,30 @@ class BacktestEngine:
         return returns.fillna(0)
 
     @staticmethod
-    def _truncate_one_price_df_asof(df, asof: pd.Timestamp):
-        """Truncate a single prices DataFrame to rows on or before asof."""
-        if df is None or df.empty:
-            return df
-        if 'date' in df.columns:
-            return df[pd.to_datetime(df['date']) <= asof]
-        return df.loc[df.index <= asof]
-
-    @classmethod
-    def _truncate_prices_asof(cls, prices: Dict[str, pd.DataFrame], asof) -> Dict[str, pd.DataFrame]:
-        """Truncate every ticker's prices to rows on or before asof."""
-        ts = pd.Timestamp(asof)
-        out = {}
-        for ticker, df in prices.items():
-            truncated = cls._truncate_one_price_df_asof(df, ts)
-            if truncated is not None and not truncated.empty:
-                out[ticker] = truncated
-        return out
-
-    @staticmethod
     def _market_caps_asof(
-        prices_asof: Dict[str, pd.DataFrame],
+        prices_view,
         shares_outstanding: Dict[str, float],
     ) -> Dict[str, float]:
         """
         Compute market cap as of the rebalance date: shares * price[asof_date].
 
-        Holds shares constant at the load-time implied value. This ignores
-        buybacks/issuances over the backtest period — the right tradeoff for now;
-        the alternative is per-rebalance polygon shares queries.
+        `prices_view` is a PointInTimeView already truncated to as_of, so
+        df.iloc[-1]['close'] is the as-of price.
+
+        Holds shares constant at the load-time implied value. Constant-shares
+        is a known approximation (ignores buybacks/issuances over the backtest
+        window) but eliminates the much larger price-driven look-ahead.
         """
         if not shares_outstanding:
             return {}
         out = {}
         for ticker, shares in shares_outstanding.items():
-            df = prices_asof.get(ticker)
+            df = prices_view.get(ticker)
             if df is None or df.empty or shares is None or shares <= 0:
                 continue
-            if 'close' in df.columns:
-                asof_price = df.iloc[-1]['close']
-            else:
+            if 'close' not in df.columns:
                 continue
+            asof_price = df.iloc[-1]['close']
             if pd.isna(asof_price) or asof_price <= 0:
                 continue
             out[ticker] = float(shares) * float(asof_price)
