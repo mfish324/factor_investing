@@ -35,30 +35,30 @@ This biases the comparison *against* the high-yield ETFs (which have more divide
 
 | Strategy | Total Return | Ann. Return | Sharpe | Max DD |
 |---|---:|---:|---:|---:|
-| magic_formula | 12.38% | 2.38% | -0.08 | -38.37% |
-| piotroski | 122.09% | 17.44% | 0.67 | -26.29% |
-| garp | 121.00% | 17.32% | 0.70 | -25.49% |
-| quality_value | 117.57% | 16.95% | 0.74 | -22.84% |
-| three_factor | 174.78% | 22.58% | 0.98 | -19.75% |
-| six_factor | 146.68% | 19.95% | 0.90 | -19.99% |
-| low_volatility | 37.89% | 6.69% | 0.22 | -17.64% |
-| shareholder_yield | 221.82% | 26.55% | 0.81 | -18.41% |
-| ml_ensemble | 85.10% | 13.21% | 0.44 | -26.85% |
+| magic_formula | -19.29% | -4.23% | -0.40 | -46.31% |
+| piotroski | 84.40% | 13.13% | 0.46 | -31.10% |
+| garp | 105.26% | 15.60% | 0.62 | -26.99% |
+| quality_value | 98.69% | 14.84% | 0.60 | -28.06% |
+| three_factor | 118.20% | 17.03% | 0.74 | -21.73% |
+| six_factor | 114.13% | 16.59% | 0.72 | -23.76% |
+| low_volatility | 32.53% | 5.84% | 0.15 | -20.66% |
+| shareholder_yield | 140.29% | 19.33% | 0.55 | -19.39% |
+| ml_ensemble | 72.15% | 11.57% | 0.36 | -28.36% |
 
 ## Pairwise: our strategy vs closest ETF analog
 
 | Our Strategy | Our Ann. | Our Sharpe | ETF | ETF Ann. | ETF Sharpe | Ann. Gap | Sharpe Gap |
 |---|---|---|---|---|---|---|---|
-| shareholder_yield | 26.55% | 0.81 | SYLD | 3.83% | -0.01 | +22.71% | +0.82 |
-| quality_value | 16.95% | 0.74 | SPHQ | 12.13% | 0.49 | +4.82% | +0.24 |
-| quality_value | 16.95% | 0.74 | QUAL | 10.15% | 0.35 | +6.80% | +0.38 |
-| three_factor | 22.58% | 0.98 | VLUE | 9.38% | 0.31 | +13.20% | +0.67 |
-| three_factor | 22.58% | 0.98 | IUSV | 8.12% | 0.28 | +14.46% | +0.70 |
-| six_factor | 19.95% | 0.90 | MTUM | 11.66% | 0.37 | +8.29% | +0.53 |
-| low_volatility | 6.69% | 0.22 | USMV | 5.37% | 0.11 | +1.32% | +0.11 |
-| low_volatility | 6.69% | 0.22 | SPLV | 3.79% | -0.02 | +2.90% | +0.24 |
-| magic_formula | 2.38% | -0.08 | SPY | 11.56% | 0.44 | -9.18% | -0.52 |
-| piotroski | 17.44% | 0.67 | SPHQ | 12.13% | 0.49 | +5.31% | +0.17 |
+| shareholder_yield | 19.33% | 0.55 | SYLD | 3.83% | -0.01 | +15.50% | +0.56 |
+| quality_value | 14.84% | 0.60 | SPHQ | 12.13% | 0.49 | +2.71% | +0.11 |
+| quality_value | 14.84% | 0.60 | QUAL | 10.15% | 0.35 | +4.70% | +0.25 |
+| three_factor | 17.03% | 0.74 | VLUE | 9.38% | 0.31 | +7.65% | +0.44 |
+| three_factor | 17.03% | 0.74 | IUSV | 8.12% | 0.28 | +8.91% | +0.46 |
+| six_factor | 16.59% | 0.72 | MTUM | 11.66% | 0.37 | +4.94% | +0.35 |
+| low_volatility | 5.84% | 0.15 | USMV | 5.37% | 0.11 | +0.47% | +0.04 |
+| low_volatility | 5.84% | 0.15 | SPLV | 3.79% | -0.02 | +2.05% | +0.17 |
+| magic_formula | -4.23% | -0.40 | SPY | 11.56% | 0.44 | -15.78% | -0.84 |
+| piotroski | 13.13% | 0.46 | SPHQ | 12.13% | 0.49 | +1.00% | -0.04 |
 
 ## How to read
 

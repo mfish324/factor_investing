@@ -29,7 +29,8 @@
       "Bash(curl -s http://localhost:8502/)",
       "Bash(pkill -f \"streamlit run dashboard/app.py\")",
       "PowerShell(Get-NetTCPConnection *)",
-      "WebFetch(domain:en.wikipedia.org)"
+      "WebFetch(domain:en.wikipedia.org)",
+      "Bash(tee logs/shadow_backfill_pit.log)"
     ],
     "deny": [],
     "ask": []
