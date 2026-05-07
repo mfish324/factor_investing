@@ -68,6 +68,7 @@ def backfill_strategy(
     portfolio_size: int = 30,
     initial_capital: float = INITIAL_CAPITAL,
     show_progress: bool = False,
+    membership_db=None,
 ) -> BacktestResult:
     """Run the engine and dump its output into the shadow DB."""
     engine = BacktestEngine(
@@ -77,6 +78,7 @@ def backfill_strategy(
         rebalance_freq=rebalance_freq,
         portfolio_size=portfolio_size,
         initial_capital=initial_capital,
+        membership_db=membership_db,
     )
     result = engine.run(
         financials=financials,

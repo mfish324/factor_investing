@@ -44,7 +44,8 @@ class BacktestEngine:
         rebalance_freq: str = None,
         portfolio_size: int = None,
         initial_capital: float = 100000.0,
-        transaction_cost_bps: float = None
+        transaction_cost_bps: float = None,
+        membership_db=None,
     ):
         """
         Args:
@@ -65,6 +66,7 @@ class BacktestEngine:
         self.portfolio_size = portfolio_size or DEFAULT_PORTFOLIO_SIZE
         self.initial_capital = initial_capital
         self.transaction_cost_bps = transaction_cost_bps or TRANSACTION_COST_BPS
+        self.membership_db = membership_db
 
     def run(
         self,
@@ -145,14 +147,33 @@ class BacktestEngine:
                     current_prices[ticker] = price
 
             if is_rebalance and current_prices:
+                # Restrict to S&P 500 members on this date if we have the
+                # membership DB. Removes survivorship bias: stocks that
+                # weren't yet (or no longer were) S&P 500 members can't be
+                # picked, just as in a real index-tracked strategy.
+                if self.membership_db is not None:
+                    asof_str = (
+                        date.strftime("%Y-%m-%d")
+                        if hasattr(date, "strftime") else str(date)
+                    )
+                    members = self.membership_db.members_on(asof_str)
+                    prices_filtered = {t: df for t, df in prices.items() if t in members}
+                    financials_filtered = {t: df for t, df in financials.items() if t in members}
+                else:
+                    prices_filtered = prices
+                    financials_filtered = financials
+
                 # Wrap prices and financials in point-in-time views so the model
                 # cannot reach data dated after the rebalance date. Future rows
                 # are dropped at view construction; this is the architectural
                 # guarantee against look-ahead bias.
-                prices_view = PointInTimeView(prices, as_of=date, date_column='date')
-                financials_view = PointInTimeView(
-                    financials, as_of=date, date_column='filing_date'
+                prices_view = PointInTimeView(
+                    prices_filtered, as_of=date, date_column='date'
                 )
+                financials_view = PointInTimeView(
+                    financials_filtered, as_of=date, date_column='filing_date'
+                )
+
                 benchmark_asof = truncate_one(benchmark_prices, date)
                 if shares_outstanding:
                     market_caps_asof = self._market_caps_asof(prices_view, shares_outstanding)

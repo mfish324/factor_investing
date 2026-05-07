@@ -182,7 +182,8 @@ def cli():
 @click.option('--portfolio-size', default=DEFAULT_PORTFOLIO_SIZE, help='Number of stocks')
 @click.option('--rebalance', default=DEFAULT_REBALANCE_FREQUENCY, help='Rebalance frequency')
 @click.option('--output', '-o', default=None, help='Output directory')
-def run(run_all, model, start_date, end_date, portfolio_size, rebalance, output):
+@click.option('--no-pit-membership', is_flag=True, help='Disable point-in-time S&P 500 membership filter (forces survivorship-biased current snapshot)')
+def run(run_all, model, start_date, end_date, portfolio_size, rebalance, output, no_pit_membership):
     """Run backtests for factor models."""
 
     # Determine which models to run
@@ -209,9 +210,32 @@ def run(run_all, model, start_date, end_date, portfolio_size, rebalance, output)
     polygon_client = get_polygon_client()
     universe_manager = UniverseManager()
 
-    # Get universe
-    universe = universe_manager.get_universe('sp500', exclude_financials=True)
-    click.echo(f"Universe: {len(universe)} stocks")
+    # Membership: prefer historical (PIT) when available; fall back to current
+    # snapshot otherwise. Pass-through to engine so it filters per rebalance.
+    membership_db = None
+    if not no_pit_membership:
+        try:
+            from data.sp500_membership import MembershipDB
+            membership_db = MembershipDB()
+            membership_db.status()  # raises softly if empty
+            universe = universe_manager.get_universe_union(
+                start_date, end_date, exclude_financials=True
+            )
+            click.echo(
+                f"Universe (point-in-time): {len(universe)} tickers across "
+                f"{start_date} to {end_date}"
+            )
+        except Exception as e:
+            click.echo(
+                f"Falling back to current S&P 500 snapshot ({e}). "
+                f"Run `shadow build-membership` first to enable PIT mode."
+            )
+            membership_db = None
+            universe = universe_manager.get_universe('sp500', exclude_financials=True)
+            click.echo(f"Universe (current snapshot): {len(universe)} stocks")
+    else:
+        universe = universe_manager.get_universe('sp500', exclude_financials=True)
+        click.echo(f"Universe (current snapshot, PIT disabled): {len(universe)} stocks")
 
     # Load data
     financials, prices, market_caps, benchmark_prices, shares_outstanding = load_data(
@@ -237,7 +261,8 @@ def run(run_all, model, start_date, end_date, portfolio_size, rebalance, output)
             start_date=start_date,
             end_date=end_date,
             rebalance_freq=rebalance,
-            portfolio_size=portfolio_size
+            portfolio_size=portfolio_size,
+            membership_db=membership_db,
         )
 
         result = engine.run(
@@ -1103,13 +1128,44 @@ def shadow_init():
     click.echo(f"Shadow DB ready at {db.db_path}")
 
 
+@shadow.command('build-membership')
+def shadow_build_membership():
+    """Fetch the S&P 500 historical-membership tables from Wikipedia."""
+    from data.sp500_membership import MembershipDB
+    db = MembershipDB()
+    info = db.refresh_from_wikipedia()
+    click.echo(
+        f"Members: {info['current_members']}, changes: {info['changes']}, "
+        f"fetched_at: {info['fetched_at']}"
+    )
+    click.echo(f"DB path: {db.db_path}")
+
+
+@shadow.command('membership-status')
+@click.option('--date', default=None, help='Show member count on this date (YYYY-MM-DD)')
+def shadow_membership_status(date):
+    """Show summary of the historical-membership DB."""
+    from data.sp500_membership import MembershipDB
+    db = MembershipDB()
+    s = db.status()
+    click.echo(
+        f"Members (today): {s['current_members']}, changes: {s['changes']}\n"
+        f"Earliest change: {s['earliest_change']}, latest: {s['latest_change']}\n"
+        f"Last fetch: {s.get('last_fetch', 'n/a')}"
+    )
+    if date:
+        members = db.members_on(date)
+        click.echo(f"Members on {date}: {len(members)}")
+
+
 @shadow.command('backfill')
 @click.option('--start-date', default='2019-01-01', help='Backfill start date')
 @click.option('--end-date', default=None, help='Backfill end date (default: today)')
 @click.option('-m', '--model', 'models', multiple=True, help='Subset of models (default: all)')
 @click.option('--portfolio-size', default=DEFAULT_PORTFOLIO_SIZE, help='Number of stocks')
 @click.option('--rebalance', default=DEFAULT_REBALANCE_FREQUENCY, help='Rebalance frequency')
-def shadow_backfill(start_date, end_date, models, portfolio_size, rebalance):
+@click.option('--no-pit-membership', is_flag=True, help='Disable point-in-time S&P 500 membership filter')
+def shadow_backfill(start_date, end_date, models, portfolio_size, rebalance, no_pit_membership):
     """Populate the shadow DB with full historical equity curves for each strategy."""
     from tracking import ShadowDB
     from tracking.snapshot import backfill_strategy
@@ -1126,11 +1182,31 @@ def shadow_backfill(start_date, end_date, models, portfolio_size, rebalance):
     click.echo(f"Backfill {start_date} -> {end_date}, models: {', '.join(targets)}")
 
     polygon_client = get_polygon_client()
-    universe = UniverseManager().get_universe('sp500', exclude_financials=True)
+    universe_manager = UniverseManager()
+
+    membership_db = None
+    if not no_pit_membership:
+        try:
+            from data.sp500_membership import MembershipDB
+            membership_db = MembershipDB()
+            membership_db.status()
+            universe = universe_manager.get_universe_union(
+                start_date, end_date, exclude_financials=True
+            )
+            click.echo(f"Universe (point-in-time union): {len(universe)} tickers")
+        except Exception as e:
+            click.echo(f"Falling back to current S&P 500 snapshot ({e})")
+            membership_db = None
+            universe = universe_manager.get_universe('sp500', exclude_financials=True)
+            click.echo(f"Universe (current snapshot): {len(universe)} stocks")
+    else:
+        universe = universe_manager.get_universe('sp500', exclude_financials=True)
+        click.echo(f"Universe (current snapshot, PIT disabled): {len(universe)} stocks")
+
     financials, prices, market_caps, benchmark_prices, shares_outstanding = load_data(
         polygon_client, universe, start_date, end_date
     )
-    click.echo(f"Universe loaded: {len(prices)} prices, {len(market_caps)} market caps")
+    click.echo(f"Loaded: {len(prices)} prices, {len(market_caps)} market caps")
 
     db = ShadowDB()
     for name in targets:
@@ -1150,6 +1226,7 @@ def shadow_backfill(start_date, end_date, models, portfolio_size, rebalance):
             rebalance_freq=rebalance,
             portfolio_size=portfolio_size,
             show_progress=False,
+            membership_db=membership_db,
         )
         m = result.metrics
         click.echo(

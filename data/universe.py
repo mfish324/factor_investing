@@ -108,9 +108,92 @@ class UniverseManager:
     Handles filtering and sector classification.
     """
 
-    def __init__(self, polygon_client=None):
+    def __init__(self, polygon_client=None, membership_db=None):
         self.polygon_client = polygon_client
+        self._membership_db = membership_db
         self._universe_cache = {}
+
+    def _get_membership_db(self):
+        """Lazy-load the historical membership DB."""
+        if self._membership_db is None:
+            from .sp500_membership import MembershipDB
+            self._membership_db = MembershipDB()
+        return self._membership_db
+
+    def get_universe_at(
+        self,
+        date: str,
+        exclude_financials: bool = False,
+        exclude_utilities: bool = False,
+        exclude_real_estate: bool = False,
+    ) -> List[str]:
+        """
+        Get the S&P 500 membership as of a historical date.
+
+        Reads from the local sp500_membership.db (populated via
+        `python main.py shadow build-membership`). Raises if the DB has not
+        been built yet.
+
+        Sector exclusions still use the static SECTOR_MAP from the current
+        snapshot — historical sector reclassifications are not modeled.
+        """
+        db = self._get_membership_db()
+        members = db.members_on(date)
+        if not members:
+            raise RuntimeError(
+                f"No membership found for {date}. "
+                f"Run `python main.py shadow build-membership` first."
+            )
+        tickers = sorted(members)
+
+        exclusions = []
+        if exclude_financials:
+            exclusions.append("Financials")
+        if exclude_utilities:
+            exclusions.append("Utilities")
+        if exclude_real_estate:
+            exclusions.append("Real Estate")
+        if exclusions:
+            tickers = self.exclude_sectors(tickers, exclusions)
+        return tickers
+
+    def get_universe_union(
+        self,
+        start_date: str,
+        end_date: str,
+        exclude_financials: bool = False,
+        exclude_utilities: bool = False,
+        exclude_real_estate: bool = False,
+    ) -> List[str]:
+        """
+        Get the union of S&P 500 membership across [start_date, end_date].
+
+        Used for one-shot data loading: we fetch financials and prices for any
+        ticker that was a member at any point during the backtest window. The
+        per-rebalance membership filter is applied later by the engine.
+        """
+        db = self._get_membership_db()
+        # Walk monthly samples across the window — cheap and exact enough.
+        ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        all_members: set[str] = set()
+        while ts <= end_ts:
+            all_members |= db.members_on(ts.strftime("%Y-%m-%d"))
+            ts = ts + pd.DateOffset(months=1)
+        # Always include the end date snapshot
+        all_members |= db.members_on(end_ts.strftime("%Y-%m-%d"))
+        tickers = sorted(all_members)
+
+        exclusions = []
+        if exclude_financials:
+            exclusions.append("Financials")
+        if exclude_utilities:
+            exclusions.append("Utilities")
+        if exclude_real_estate:
+            exclusions.append("Real Estate")
+        if exclusions:
+            tickers = self.exclude_sectors(tickers, exclusions)
+        return tickers
 
     def get_sp500(self) -> List[str]:
         """Get S&P 500 constituent tickers."""

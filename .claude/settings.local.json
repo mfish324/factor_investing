@@ -28,7 +28,8 @@
       "Bash(curl -s http://localhost:8502/_stcore/health)",
       "Bash(curl -s http://localhost:8502/)",
       "Bash(pkill -f \"streamlit run dashboard/app.py\")",
-      "PowerShell(Get-NetTCPConnection *)"
+      "PowerShell(Get-NetTCPConnection *)",
+      "WebFetch(domain:en.wikipedia.org)"
     ],
     "deny": [],
     "ask": []
