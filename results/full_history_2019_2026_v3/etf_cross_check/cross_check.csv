@@ -1,0 +1,19 @@
+Series,Tag,Total Return,Ann. Return,Vol,Sharpe,Max DD,Days
+SPY (real ETF),ETF,71.95%,11.56%,17.17%,0.44,-25.36%,1249
+SYLD (real ETF),ETF,20.50%,3.83%,20.86%,-0.01,-27.43%,1249
+VLUE (real ETF),ETF,55.97%,9.38%,17.58%,0.31,-28.77%,1249
+IUSV (real ETF),ETF,47.27%,8.12%,14.72%,0.28,-19.20%,1249
+SPHQ (real ETF),ETF,76.38%,12.13%,16.47%,0.49,-26.02%,1249
+QUAL (real ETF),ETF,61.46%,10.15%,17.44%,0.35,-29.04%,1249
+MTUM (real ETF),ETF,72.71%,11.66%,20.49%,0.37,-32.77%,1249
+USMV (real ETF),ETF,29.59%,5.37%,12.49%,0.11,-18.87%,1249
+SPLV (real ETF),ETF,20.24%,3.79%,12.48%,-0.02,-18.01%,1249
+magic_formula,our backtest,12.38%,2.38%,19.69%,-0.08,-38.37%,1251
+piotroski,our backtest,122.09%,17.44%,20.18%,0.67,-26.29%,1251
+garp,our backtest,121.00%,17.32%,19.00%,0.70,-25.49%,1251
+quality_value,our backtest,117.57%,16.95%,17.60%,0.74,-22.84%,1251
+three_factor,our backtest,174.78%,22.58%,19.04%,0.98,-19.75%,1251
+six_factor,our backtest,146.68%,19.95%,17.65%,0.90,-19.99%,1251
+low_volatility,our backtest,37.89%,6.69%,12.05%,0.22,-17.64%,1251
+shareholder_yield,our backtest,221.82%,26.55%,27.73%,0.81,-18.41%,1251
+ml_ensemble,our backtest,85.10%,13.21%,20.85%,0.44,-26.85%,1251
