@@ -7,7 +7,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 import numpy as np
 import logging
-from tqdm import tqdm
+from tqdm import tqdm  # noqa: F401
 
 from models.base import FactorModel
 from .portfolio import Portfolio
@@ -175,8 +175,15 @@ class BacktestEngine:
                 )
 
                 benchmark_asof = truncate_one(benchmark_prices, date)
+                # Compute market cap as `shares_today * price[asof_date]`. This
+                # is split-consistent (Polygon's adjusted prices and our load-time
+                # implied-shares snapshot are both today's split-adjusted basis).
+                # See docs in `_market_caps_from_filings` for the split issue
+                # that prevents using per-filing EPS-implied shares directly.
                 if shares_outstanding:
-                    market_caps_asof = self._market_caps_asof(prices_view, shares_outstanding)
+                    market_caps_asof = self._market_caps_constant_shares(
+                        prices_view, shares_outstanding
+                    )
                 else:
                     market_caps_asof = market_caps
 
@@ -364,34 +371,111 @@ class BacktestEngine:
         return returns.fillna(0)
 
     @staticmethod
-    def _market_caps_asof(
+    def _implied_shares_from_filings(fin_df: pd.DataFrame):
+        """
+        Walk a ticker's filings (most-recent-first) and return the first
+        usable shares = net_income / eps_diluted. Returns None if no row
+        has both fields populated and EPS != 0.
+        """
+        if fin_df is None or fin_df.empty:
+            return None
+        ni_col = "net_income"
+        eps_col = "eps_diluted"
+        if ni_col not in fin_df.columns or eps_col not in fin_df.columns:
+            return None
+        for _, row in fin_df.iterrows():
+            ni = row.get(ni_col)
+            eps = row.get(eps_col)
+            if pd.isna(ni) or pd.isna(eps):
+                continue
+            try:
+                ni = float(ni)
+                eps = float(eps)
+            except (TypeError, ValueError):
+                continue
+            if eps == 0 or ni == 0:
+                continue
+            shares = ni / eps
+            if shares > 0:
+                return shares
+        return None
+
+    @staticmethod
+    def _market_caps_constant_shares(
         prices_view,
         shares_outstanding: Dict[str, float],
     ) -> Dict[str, float]:
         """
         Compute market cap as of the rebalance date: shares * price[asof_date].
 
-        `prices_view` is a PointInTimeView already truncated to as_of, so
-        df.iloc[-1]['close'] is the as-of price.
+        `shares_outstanding` is the load-time implied snapshot
+        (load_time_market_cap / load_time_close). Both factors below are on
+        a today's-split-adjusted basis: shares_outstanding came from
+        polygon.get_market_cap (which is today-anchored), and `asof_price`
+        is from polygon's adjusted price endpoint, which is also today-
+        anchored split-adjusted. Multiplying them gives a market cap that
+        is split-consistent.
 
-        Holds shares constant at the load-time implied value. Constant-shares
-        is a known approximation (ignores buybacks/issuances over the backtest
-        window) but eliminates the much larger price-driven look-ahead.
+        Known approximation: shares are held constant. Companies that did
+        large buybacks (Apple, Microsoft, Google) have lower shares today
+        than in the past, so historical market caps are *under-stated*.
+        This biases yield-on-mc strategies (Shareholder Yield) upward by
+        single-digit percentage points per year.
+
+        See `_market_caps_from_filings` for why we don't use per-filing
+        EPS-implied shares: those are NOT split-adjusted, so combining
+        them with adjusted prices produces wildly wrong market caps for
+        any company that ever split (Apple, NVDA, Tesla, Google).
         """
         if not shares_outstanding:
             return {}
-        out = {}
+        out: Dict[str, float] = {}
         for ticker, shares in shares_outstanding.items():
             df = prices_view.get(ticker)
             if df is None or df.empty or shares is None or shares <= 0:
                 continue
-            if 'close' not in df.columns:
+            if "close" not in df.columns:
                 continue
-            asof_price = df.iloc[-1]['close']
+            asof_price = df.iloc[-1]["close"]
             if pd.isna(asof_price) or asof_price <= 0:
                 continue
             out[ticker] = float(shares) * float(asof_price)
         return out
+
+    @classmethod
+    def _market_caps_from_filings(
+        cls,
+        prices_view,
+        financials_view,
+        shares_outstanding_fallback: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, float]:
+        """
+        DO NOT USE. Kept here as documentation of a failed approach.
+
+        Tries to compute market cap from `net_income / eps_diluted` per filing
+        times the as-of price. The intent is to capture buybacks/issuances
+        over time. The bug: filings report EPS on an as-reported (not split-
+        adjusted) basis, while polygon prices are split-adjusted. For any
+        company that ever did a split — Apple (4:1, Aug 2020), NVDA (10:1,
+        Jun 2024 plus prior splits), Tesla, Google — the implied shares are
+        on a different basis than the price, and the resulting market cap
+        is wrong by the cumulative split factor (under-states by 4x for
+        Apple pre-Aug-2020).
+
+        That bias makes yield-on-mc strategies (Shareholder Yield) over-pick
+        the same handful of mega-caps that did large splits, producing
+        artificially inflated backtest performance (we observed
+        shareholder_yield jumping from +140% to +196% solely because of
+        this bug).
+
+        The proper fix would source split factors from polygon's splits
+        endpoint and divide implied_shares by the cumulative split factor
+        between filing_date and today before multiplying by the adjusted
+        price. Not implemented; constant-shares is the current default.
+        """
+        raise NotImplementedError(
+            "Use _market_caps_constant_shares. See docstring for the split bug."
+        )
 
     def _empty_result(self) -> BacktestResult:
         """Return empty result on failure."""
