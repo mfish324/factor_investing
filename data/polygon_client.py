@@ -424,6 +424,42 @@ class PolygonClient:
             return details.get('market_cap')
         return None
 
+    def get_splits(self, ticker: str, use_cache: bool = True) -> list:
+        """
+        Fetch historical stock splits for a ticker.
+
+        Returns a list of dicts, each with keys: execution_date, split_from,
+        split_to. An empty list means "no splits on record". Cached for 7
+        days; splits are rare so freshness doesn't matter much.
+        """
+        ticker = ticker.upper()
+        if use_cache:
+            cached = self.cache.get_splits(ticker)
+            if cached is not None:
+                return cached
+        endpoint = "/v3/reference/splits"
+        params = {"ticker": ticker, "limit": 100}
+        try:
+            data = self._request(endpoint, params)
+            results = data.get("results", [])
+            # Keep only what we need
+            cleaned = [
+                {
+                    "execution_date": r.get("execution_date"),
+                    "split_from": r.get("split_from"),
+                    "split_to": r.get("split_to"),
+                }
+                for r in results
+                if r.get("execution_date") and r.get("split_from") and r.get("split_to")
+            ]
+            self.cache.set_splits(ticker, cleaned)
+            return cleaned
+        except Exception as e:
+            logger.warning(f"Failed to fetch splits for {ticker}: {e}")
+            # Cache empty result so we don't retry constantly
+            self.cache.set_splits(ticker, [])
+            return []
+
     def get_shares_outstanding(self, ticker: str) -> Optional[float]:
         """Get shares outstanding for a ticker."""
         details = self.get_ticker_details(ticker)

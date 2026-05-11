@@ -86,7 +86,7 @@ def main():
     universe = UniverseManager().get_universe('sp500', exclude_financials=True)
     logger.info(f"Universe: {len(universe)} stocks")
 
-    financials, prices, market_caps, benchmark_prices, shares_outstanding = load_data(
+    financials, prices, market_caps, benchmark_prices, shares_outstanding, _ = load_data(
         polygon_client, universe, START_DATE, END_DATE
     )
     valid = set(financials) & set(prices) & set(market_caps)

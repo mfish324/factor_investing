@@ -97,10 +97,15 @@ python main.py trade rebalance --model six_factor --dry-run
 
 # Shadow tracker + dashboard
 python main.py shadow init                  # one-time DB init
+python main.py shadow build-membership      # fetch S&P 500 historical membership from Wikipedia
 python main.py shadow backfill               # populate from BacktestEngine
 python main.py shadow update                 # incremental daily refresh
 python main.py shadow status                 # one-line summary per strategy
 python main.py shadow dashboard              # launch Streamlit dashboard
+
+# Reality checks
+python scripts/etf_cross_check.py            # compare strategies vs real ETFs (SYLD, VLUE, etc.)
+python scripts/determinism_test.py           # verify same-process reproducibility
 
 # Tests
 pytest tests/ -v
@@ -110,8 +115,9 @@ pytest tests/ -v
 
 - **Factor calculators** (`factors/`) compute raw metrics per stock. Each has `calculate()` for single stock, `calculate_universe()` for batch, and a `*_composite_score()` method.
 - **Models** (`models/`) implement `score()` returning a Series (higher = better). Base class provides `rank()` and `select_portfolio()`.
-- **BacktestEngine** does walk-forward simulation: on each rebalance date, builds a `PointInTimeView` of prices and financials so the model only sees data dated `<= rebalance_date`, calls `model.select_portfolio()`, then tracks daily P&L. Market caps are recomputed at each rebalance from `shares_outstanding × price[as_of_date]` (constant-shares approximation).
+- **BacktestEngine** does walk-forward simulation: on each rebalance date, restricts the universe to point-in-time S&P 500 members (when `membership_db` is wired), builds a `PointInTimeView` of prices and financials so the model only sees data dated `<= rebalance_date`, calls `model.select_portfolio()`, then tracks daily P&L. Market caps are recomputed at each rebalance from `shares_outstanding × price[as_of_date]` (constant-shares approximation). A more accurate splits-aware path exists (`_market_caps_with_splits` using `NI/EPS_diluted × cumulative_split_factor × asof_price`) but is not yet validated — see `memory/project_splits_work.md` for the resume point.
 - **PointInTimeView** (`backtesting/point_in_time.py`) is the architectural look-ahead guard. Models receive a read-only dict-like view that physically drops rows after `as_of`. The bug class behind the May 2026 look-ahead incident cannot recur. Locked in by `tests/test_point_in_time.py`.
+- **PIT S&P 500 membership** (`data/sp500_membership.py`) — sourced from Wikipedia, replayed backward from today's snapshot to answer `members_on(date)`. 112 tickers were members on 2019-01-01 but are not today (AAL, BBWI, FRC, GPS, HBI, SIVB, TWTR, etc.) — without this, the backtest never has to face the value traps real factor ETFs paid for. Build with `python main.py shadow build-membership`.
 - **ML pipeline** uses `FeatureEngineer` to build feature matrix from all factor categories, trains XGBoost with Optuna, saves to joblib. The fitted scaler/imputer are serialized with the model. **The current `models/saved/ml_ensemble.joblib` was trained pre-fix and underperforms on honest data — needs retraining.**
 - **Shadow tracker** (`tracking/`) maintains a parallel SQLite DB (`data/shadow.db`) with daily equity curves, holdings, and picks for every strategy. Decoupled from the real Alpaca account: only one strategy (or a blend) actually executes; the rest are tracked for the dashboard and rotation engine.
 - **Dashboard** (`dashboard/app.py`) is a Streamlit app that reads `shadow.db` and renders performance summary, cumulative return / drawdown charts, regime signals (20/50 SMA + RSI), correlation heatmap, and current picks.
@@ -127,6 +133,16 @@ The fix is in three layers:
 3. `tests/test_point_in_time.py` locks the as-of guarantee architecturally.
 
 Reports and shadow-DB data generated from commit `b68bd5a` onward are honest. Anything before that has bias on absolute returns; relative model rankings are still informative but not authoritative.
+
+### Survivorship and shares (May 2026, ongoing)
+
+After the look-ahead fix, an ETF cross-check (`scripts/etf_cross_check.py`) showed our `shareholder_yield` model at +26.55% annualized while the real Cambria SYLD ETF returned 3.83% over the same window — a +22.7pt gap that screamed methodology bias. Two further fixes landed:
+
+1. **PIT S&P 500 membership** (commit `e2ee5ed`): universe expanded from ~470 (today's list) to ~604 (union of historical members). Shareholder Yield dropped to ~+167% / 21.85% annualized; SYLD gap shrank to +17.2pts.
+
+2. **Splits-aware market cap** (commit `c94bf71` and later, **not yet validated**): per-filing implied shares (`NI/EPS_diluted`) scaled by cumulative split factor since the filing date. This corrects both the constant-shares buyback under-statement AND the split inconsistency that breaks naive implied-shares. Code is committed; backfill stalled on first try; needs re-run + ETF cross-check in next session.
+
+Current trustworthy strategies (per cross-check vs real ETFs): low_volatility (~0pt gap), ml_ensemble (~0pt), quality_value (+2.3pts), magic_formula (matches real-world underperformance). Mildly inflated: three_factor, six_factor (+7pts each, partly real concentration premium). Still suspect: shareholder_yield (+17pts).
 
 ## Environment Variables
 

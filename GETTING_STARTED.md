@@ -40,16 +40,29 @@ The shadow tracker maintains a separate SQLite DB (`data/shadow.db`) with daily 
 
 ```bash
 python main.py shadow init
+python main.py shadow build-membership      # historical S&P 500 membership from Wikipedia
 python main.py shadow backfill --start-date 2019-01-01
 ```
 
-Backfill runs the BacktestEngine for each of the 9 strategies and dumps results into the DB. Takes ~30-45 minutes on a warm cache. After it finishes:
+Backfill runs the BacktestEngine for each of the 9 strategies and dumps results into the DB. Takes ~30-45 minutes on a warm cache (first run also fetches splits for ~600 tickers, adding ~10 min). After it finishes:
 
 ```bash
 python main.py shadow status
 ```
 
 Should print one line per strategy with last-equity and total return.
+
+### Reality-check against real ETFs
+
+After backfill, verify the strategies aren't grossly inflated by methodology bias:
+
+```bash
+python scripts/etf_cross_check.py
+```
+
+This pulls split-adjusted price-only returns for SYLD, VLUE, SPHQ, QUAL, MTUM, USMV, SPLV, IUSV, SPY from Polygon and compares to our shadow-DB strategies on the same basis. Output: `results/full_history_2019_2026_v3/etf_cross_check/cross_check.md`.
+
+Look for the **`Ann. Gap`** column. Strategies within ±3pts of their ETF analog are realistic. Strategies more than ~10pts off the ETF analog likely have remaining bias (the most common culprit being the constant-shares market-cap approximation; see CLAUDE.md "Survivorship and shares" for the in-progress splits fix).
 
 ## 2. Daily workflow (during paper trading / monitoring)
 

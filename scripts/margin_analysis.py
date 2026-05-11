@@ -116,7 +116,7 @@ def margin_call_risk(returns: pd.Series, leverage: float, maintenance: float = 0
 def main():
     polygon = get_polygon_client()
     universe = UniverseManager().get_universe('sp500', exclude_financials=True)
-    financials, prices, market_caps, benchmark_prices, shares_outstanding = load_data(
+    financials, prices, market_caps, benchmark_prices, shares_outstanding, _ = load_data(
         polygon, universe, START_DATE, END_DATE
     )
     logger.info(f"Loaded {len(financials)} financials, {len(prices)} prices, {len(market_caps)} mcs")

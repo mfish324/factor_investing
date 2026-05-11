@@ -76,6 +76,7 @@ class BacktestEngine:
         benchmark_prices: pd.DataFrame = None,
         show_progress: bool = True,
         shares_outstanding: Dict[str, float] = None,
+        splits_by_ticker: Dict[str, list] = None,
         **kwargs
     ) -> BacktestResult:
         """
@@ -175,12 +176,18 @@ class BacktestEngine:
                 )
 
                 benchmark_asof = truncate_one(benchmark_prices, date)
-                # Compute market cap as `shares_today * price[asof_date]`. This
-                # is split-consistent (Polygon's adjusted prices and our load-time
-                # implied-shares snapshot are both today's split-adjusted basis).
-                # See docs in `_market_caps_from_filings` for the split issue
-                # that prevents using per-filing EPS-implied shares directly.
-                if shares_outstanding:
+                # Compute market cap. If we have splits data, use per-filing
+                # implied shares scaled by cumulative split factor (corrects
+                # for both buybacks and splits — the most accurate available).
+                # Otherwise fall back to constant-shares-today, which is
+                # split-consistent but under-states historical mc for heavy
+                # buyback companies.
+                if splits_by_ticker is not None:
+                    market_caps_asof = self._market_caps_with_splits(
+                        prices_view, financials_view, splits_by_ticker,
+                        fallback=shares_outstanding,
+                    )
+                elif shares_outstanding:
                     market_caps_asof = self._market_caps_constant_shares(
                         prices_view, shares_outstanding
                     )
@@ -442,40 +449,120 @@ class BacktestEngine:
             out[ticker] = float(shares) * float(asof_price)
         return out
 
+    @staticmethod
+    def _cumulative_split_factor(splits: list, since_date) -> float:
+        """
+        Product of (split_to / split_from) for every split AFTER `since_date`.
+
+        A 1-for-4 split (split_from=1, split_to=4) means one old share became
+        four new shares, so the share-count scaling factor is 4.
+
+        Polygon's adjusted prices reflect today's split-adjusted basis. To
+        convert as-reported-then implied shares (e.g., AAPL FY2018 EPS) to
+        today's basis, multiply by this factor.
+        """
+        if not splits:
+            return 1.0
+        since_ts = pd.Timestamp(since_date)
+        factor = 1.0
+        for s in splits:
+            try:
+                exec_ts = pd.Timestamp(s.get("execution_date"))
+            except Exception:
+                continue
+            if pd.isna(exec_ts) or exec_ts <= since_ts:
+                continue
+            sf = s.get("split_from")
+            st = s.get("split_to")
+            try:
+                sf = float(sf)
+                st = float(st)
+            except (TypeError, ValueError):
+                continue
+            if sf > 0 and st > 0:
+                factor *= st / sf
+        return factor
+
     @classmethod
-    def _market_caps_from_filings(
+    def _market_caps_with_splits(
         cls,
         prices_view,
         financials_view,
-        shares_outstanding_fallback: Optional[Dict[str, float]] = None,
+        splits_by_ticker: Dict[str, list],
+        fallback: Optional[Dict[str, float]] = None,
     ) -> Dict[str, float]:
         """
-        DO NOT USE. Kept here as documentation of a failed approach.
+        Compute market cap using per-filing implied shares adjusted for splits.
 
-        Tries to compute market cap from `net_income / eps_diluted` per filing
-        times the as-of price. The intent is to capture buybacks/issuances
-        over time. The bug: filings report EPS on an as-reported (not split-
-        adjusted) basis, while polygon prices are split-adjusted. For any
-        company that ever did a split — Apple (4:1, Aug 2020), NVDA (10:1,
-        Jun 2024 plus prior splits), Tesla, Google — the implied shares are
-        on a different basis than the price, and the resulting market cap
-        is wrong by the cumulative split factor (under-states by 4x for
-        Apple pre-Aug-2020).
+        Algorithm per ticker:
+        1. Walk filings (most-recent-first, already PIT-truncated). Find the
+           first row with usable net_income and eps_diluted. `implied_shares
+           = net_income / eps_diluted` gives the as-reported share count at
+           that filing's `filing_date`.
+        2. Multiply by the cumulative split factor for splits between
+           `filing_date` and today. This converts the share count to today's
+           split-adjusted basis, which matches Polygon's split-adjusted price.
+        3. `mc = adjusted_shares * asof_close`.
+        4. If the filing has no usable EPS data, fall back to the load-time
+           shares snapshot (constant-shares).
 
-        That bias makes yield-on-mc strategies (Shareholder Yield) over-pick
-        the same handful of mega-caps that did large splits, producing
-        artificially inflated backtest performance (we observed
-        shareholder_yield jumping from +140% to +196% solely because of
-        this bug).
-
-        The proper fix would source split factors from polygon's splits
-        endpoint and divide implied_shares by the cumulative split factor
-        between filing_date and today before multiplying by the adjusted
-        price. Not implemented; constant-shares is the current default.
+        This corrects both biases: (a) the look-ahead in the prior constant-
+        shares approximation (which used today's lower share count for heavy-
+        buyback companies, under-stating their historical mc) and (b) the
+        split inconsistency in the un-corrected implied-shares approach
+        (which would multiply pre-split shares by post-split-adjusted price,
+        catastrophically under-stating mc for any company that ever split).
         """
-        raise NotImplementedError(
-            "Use _market_caps_constant_shares. See docstring for the split bug."
-        )
+        out: Dict[str, float] = {}
+        candidates = set(prices_view.keys()) if hasattr(prices_view, "keys") else set()
+        if financials_view:
+            candidates |= set(financials_view.keys())
+        if fallback:
+            candidates |= set(fallback.keys())
+
+        for ticker in candidates:
+            df = prices_view.get(ticker)
+            if df is None or df.empty or "close" not in df.columns:
+                continue
+            asof_price = df.iloc[-1]["close"]
+            if pd.isna(asof_price) or asof_price <= 0:
+                continue
+
+            shares = None
+            filing_date = None
+            fin_df = financials_view.get(ticker) if financials_view else None
+            if fin_df is not None and not fin_df.empty:
+                if "net_income" in fin_df.columns and "eps_diluted" in fin_df.columns:
+                    for _, row in fin_df.iterrows():
+                        ni = row.get("net_income")
+                        eps = row.get("eps_diluted")
+                        fd = row.get("filing_date")
+                        if pd.isna(ni) or pd.isna(eps):
+                            continue
+                        try:
+                            ni = float(ni); eps = float(eps)
+                        except (TypeError, ValueError):
+                            continue
+                        if eps == 0 or ni == 0:
+                            continue
+                        s = ni / eps
+                        if s > 0:
+                            shares = s
+                            filing_date = pd.to_datetime(fd, errors="coerce")
+                            break
+
+            if shares is not None and filing_date is not None and not pd.isna(filing_date):
+                splits = splits_by_ticker.get(ticker, []) or []
+                factor = cls._cumulative_split_factor(splits, filing_date)
+                out[ticker] = float(shares) * factor * float(asof_price)
+                continue
+
+            # Fall back to load-time shares snapshot
+            if fallback:
+                fb = fallback.get(ticker)
+                if fb is not None and fb > 0:
+                    out[ticker] = float(fb) * float(asof_price)
+        return out
 
     def _empty_result(self) -> BacktestResult:
         """Return empty result on failure."""

@@ -48,7 +48,7 @@ def main():
 
     polygon_client = get_polygon_client()
     universe = UniverseManager().get_universe('sp500', exclude_financials=True)
-    financials, prices, market_caps, benchmark_prices, shares_outstanding = load_data(
+    financials, prices, market_caps, benchmark_prices, shares_outstanding, _ = load_data(
         polygon_client, universe, START_DATE, END_DATE
     )
 

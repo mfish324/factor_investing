@@ -31,7 +31,9 @@
       "PowerShell(Get-NetTCPConnection *)",
       "WebFetch(domain:en.wikipedia.org)",
       "Bash(tee logs/shadow_backfill_pit.log)",
-      "Bash(tee logs/shadow_backfill_pit_shares_v2.log)"
+      "Bash(tee logs/shadow_backfill_pit_shares_v2.log)",
+      "Bash(tee logs/shadow_backfill_pit_splits.log)",
+      "Bash(powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Format-Table Id, StartTime, CPU, WorkingSet\")"
     ],
     "deny": [],
     "ask": []

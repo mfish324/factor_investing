@@ -69,6 +69,7 @@ def backfill_strategy(
     initial_capital: float = INITIAL_CAPITAL,
     show_progress: bool = False,
     membership_db=None,
+    splits_by_ticker=None,
 ) -> BacktestResult:
     """Run the engine and dump its output into the shadow DB."""
     engine = BacktestEngine(
@@ -86,6 +87,7 @@ def backfill_strategy(
         market_caps=market_caps,
         benchmark_prices=benchmark_prices,
         shares_outstanding=shares_outstanding,
+        splits_by_ticker=splits_by_ticker,
         show_progress=show_progress,
     )
 

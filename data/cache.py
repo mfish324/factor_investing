@@ -85,6 +85,45 @@ class CacheManager:
                 )
             """)
 
+            # Stock splits cache (one row per ticker with full split history)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS splits_cache (
+                    ticker TEXT PRIMARY KEY,
+                    data TEXT,
+                    cached_at TIMESTAMP
+                )
+            """)
+
+            conn.commit()
+
+    def get_splits(self, ticker: str, expiry_days: int = 7) -> Optional[list]:
+        """Return cached splits for a ticker as a list of dicts, or None if missing/expired."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT data, cached_at FROM splits_cache WHERE ticker = ?",
+                (ticker.upper(),),
+            )
+            result = cursor.fetchone()
+            if result is None:
+                return None
+            data, cached_at = result
+            if self._is_expired(cached_at, expiry_days * 24):
+                return None
+            try:
+                return json.loads(data)
+            except Exception:
+                return None
+
+    def set_splits(self, ticker: str, splits: list):
+        """Cache the splits payload for a ticker (empty list is a valid 'no splits' answer)."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT OR REPLACE INTO splits_cache (ticker, data, cached_at)
+                   VALUES (?, ?, ?)""",
+                (ticker.upper(), json.dumps(splits), datetime.now().isoformat()),
+            )
             conn.commit()
 
     def _is_expired(self, cached_at: str, expiry_hours: float) -> bool:
