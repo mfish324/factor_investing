@@ -14,7 +14,7 @@ Both sides are under-stated by their respective dividend yields (~1.5% for
 SPY/Three Factor universe, ~3-4% for SYLD-like high-yield strategies). The
 *gap* between them is what matters.
 
-Output: results/full_history_2019_2026_v3/etf_cross_check/cross_check.md
+Output: results/comprehensive_2026-07-18/etf_cross_check/cross_check.md
 """
 
 from __future__ import annotations
@@ -35,8 +35,12 @@ from tracking import ShadowDB
 logging.basicConfig(level=logging.WARNING, format='%(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-START_DATE = "2019-01-01"
-END_DATE = "2026-05-01"
+# NOTE: the Polygon plan serves only ~5 years of daily history. Requests for
+# earlier dates silently return data starting 5 years back from today, so the
+# window below is the honest maximum (discovered 2026-07-18; earlier runs
+# labeled "2019-01-01" actually began 2021-07).
+START_DATE = "2021-08-01"
+END_DATE = "2026-07-17"
 INITIAL_CAPITAL = 100_000.0
 
 # Each pair: ETF ticker -> what it represents / closest analog among our strategies
@@ -64,7 +68,7 @@ OUR_STRATEGIES = [
     "ml_ensemble",
 ]
 
-OUTPUT_DIR = RESULTS_DIR / "full_history_2019_2026_v3" / "etf_cross_check"
+OUTPUT_DIR = RESULTS_DIR / "comprehensive_2026-07-18" / "etf_cross_check"
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 

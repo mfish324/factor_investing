@@ -140,12 +140,11 @@ class BacktestEngine:
                     is_rebalance = True
                     rebalance_idx += 1
 
-            # Get current prices
-            current_prices = {}
-            for ticker in price_matrix.columns:
-                price = price_matrix.loc[date, ticker]
-                if pd.notna(price) and price > 0:
-                    current_prices[ticker] = price
+            # Get current prices (vectorized: one row lookup instead of one
+            # scalar .loc per ticker — the per-ticker version dominated runtime)
+            row = price_matrix.loc[date]
+            valid = row[row.notna() & (row > 0)]
+            current_prices = valid.to_dict()
 
             if is_rebalance and current_prices:
                 # Restrict to S&P 500 members on this date if we have the
