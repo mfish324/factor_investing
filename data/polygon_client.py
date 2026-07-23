@@ -201,7 +201,14 @@ class PolygonClient:
                 'total_equity': get_value(balance, 'equity'),
                 'total_debt': get_value(balance, 'long_term_debt'),
                 'cash': get_value(balance, 'cash'),
-                'shares_outstanding': get_value(balance, 'common_stock_shares_outstanding'),
+                # Polygon does not serve common_stock_shares_outstanding; the
+                # income statement's period-average share counts are the real
+                # data available. As-reported basis (NOT split-adjusted).
+                'shares_outstanding': (
+                    get_value(income, 'diluted_average_shares')
+                    if get_value(income, 'diluted_average_shares')
+                    else get_value(income, 'basic_average_shares')
+                ),
 
                 # Cash Flow Statement
                 'operating_cash_flow': get_value(cash_flow, 'net_cash_flow_from_operating_activities'),
@@ -458,6 +465,43 @@ class PolygonClient:
             logger.warning(f"Failed to fetch splits for {ticker}: {e}")
             # Cache empty result so we don't retry constantly
             self.cache.set_splits(ticker, [])
+            return []
+
+    def get_dividends(self, ticker: str, use_cache: bool = True) -> list:
+        """
+        Fetch historical cash dividends for a ticker.
+
+        Returns a list of dicts, each with keys: ex_dividend_date, cash_amount,
+        pay_date. Amounts are as-declared per share (NOT split-adjusted); use
+        `data.corporate_actions.cumulative_split_factor` to convert to today's
+        basis before combining with split-adjusted prices. An empty list means
+        "no dividends on record". Cached for 7 days.
+        """
+        ticker = ticker.upper()
+        if use_cache:
+            cached = self.cache.get_dividends(ticker)
+            if cached is not None:
+                return cached
+        endpoint = "/v3/reference/dividends"
+        params = {"ticker": ticker, "limit": 1000}
+        try:
+            data = self._request(endpoint, params)
+            results = data.get("results", [])
+            cleaned = [
+                {
+                    "ex_dividend_date": r.get("ex_dividend_date"),
+                    "cash_amount": r.get("cash_amount"),
+                    "pay_date": r.get("pay_date"),
+                }
+                for r in results
+                if r.get("ex_dividend_date") and r.get("cash_amount")
+            ]
+            self.cache.set_dividends(ticker, cleaned)
+            return cleaned
+        except Exception as e:
+            logger.warning(f"Failed to fetch dividends for {ticker}: {e}")
+            # Cache empty result so we don't retry constantly
+            self.cache.set_dividends(ticker, [])
             return []
 
     def get_shares_outstanding(self, ticker: str) -> Optional[float]:

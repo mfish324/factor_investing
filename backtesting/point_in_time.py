@@ -11,6 +11,8 @@ Used for both prices (date column = 'date') and financials (filing_date).
 from typing import Dict, Iterator, Optional
 import pandas as pd
 
+from data.corporate_actions import flexible_to_datetime
+
 
 class PointInTimeView:
     """
@@ -50,12 +52,16 @@ class PointInTimeView:
             return df
         col = self._date_column
         if col in df.columns:
-            mask = pd.to_datetime(df[col], errors="coerce") <= self._as_of
-            return df.loc[mask]
+            # flexible_to_datetime handles epoch-integer columns (cache
+            # round-trips serialize datetimes to epoch ints; naive
+            # pd.to_datetime reads those as nanoseconds -> ~1970, which
+            # made this mask all-True and silently disabled truncation).
+            mask = flexible_to_datetime(df[col]) <= self._as_of
+            return df.loc[mask.values]
         # Fall back to index if the index is datetime-like
         try:
-            idx = pd.to_datetime(df.index, errors="raise")
-            return df.loc[idx <= self._as_of]
+            idx = flexible_to_datetime(pd.Series(df.index), errors="raise")
+            return df.loc[(idx <= self._as_of).values]
         except (TypeError, ValueError):
             return df
 
@@ -108,9 +114,10 @@ def truncate_one(df: Optional[pd.DataFrame], as_of, date_column: str = "date") -
         return df
     ts = pd.Timestamp(as_of)
     if date_column in df.columns:
-        return df.loc[pd.to_datetime(df[date_column], errors="coerce") <= ts]
+        mask = flexible_to_datetime(df[date_column]) <= ts
+        return df.loc[mask.values]
     try:
-        idx = pd.to_datetime(df.index, errors="raise")
-        return df.loc[idx <= ts]
+        idx = flexible_to_datetime(pd.Series(df.index), errors="raise")
+        return df.loc[(idx <= ts).values]
     except (TypeError, ValueError):
         return df

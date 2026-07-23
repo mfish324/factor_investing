@@ -8,12 +8,12 @@ QUAL (real ETF),ETF,60.90%,10.12%,17.46%,0.35,-29.04%,1243
 MTUM (real ETF),ETF,73.49%,11.82%,21.69%,0.36,-32.77%,1243
 USMV (real ETF),ETF,27.65%,5.07%,12.49%,0.09,-18.87%,1243
 SPLV (real ETF),ETF,21.88%,4.09%,12.62%,0.01,-18.01%,1243
-magic_formula,our backtest,9.51%,1.86%,19.11%,-0.11,-36.56%,1244
-piotroski,our backtest,68.46%,11.14%,17.96%,0.40,-27.10%,1244
-garp,our backtest,125.48%,17.90%,18.49%,0.75,-25.89%,1244
-quality_value,our backtest,97.94%,14.83%,18.47%,0.59,-30.85%,1244
-three_factor,our backtest,143.63%,19.77%,19.17%,0.82,-26.93%,1244
-six_factor,our backtest,158.01%,21.17%,18.25%,0.94,-23.09%,1244
-low_volatility,our backtest,46.58%,8.05%,12.97%,0.31,-16.65%,1244
-shareholder_yield,our backtest,189.33%,24.01%,27.33%,0.73,-21.01%,1244
-ml_ensemble,our backtest,75.18%,12.03%,23.47%,0.34,-28.38%,1244
+magic_formula,our backtest,16.28%,3.10%,18.80%,-0.05,-35.53%,1244
+piotroski,our backtest,30.73%,5.58%,16.70%,0.09,-21.79%,1244
+garp,our backtest,41.64%,7.31%,18.62%,0.18,-25.21%,1244
+quality_value,our backtest,37.19%,6.62%,18.15%,0.14,-25.82%,1244
+three_factor,our backtest,39.23%,6.93%,18.50%,0.16,-26.24%,1244
+six_factor,our backtest,89.74%,13.85%,18.19%,0.54,-21.04%,1244
+low_volatility,our backtest,34.16%,6.13%,12.15%,0.18,-20.27%,1244
+shareholder_yield,our backtest,38.25%,6.78%,18.39%,0.15,-27.12%,1244
+ml_ensemble,our backtest,72.19%,11.64%,24.85%,0.31,-33.38%,1244

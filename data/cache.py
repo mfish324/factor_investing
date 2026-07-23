@@ -7,6 +7,7 @@ import sqlite3
 import json
 import pandas as pd
 from datetime import datetime, timedelta
+from io import StringIO
 from pathlib import Path
 from typing import Optional, Dict, Any
 import logging
@@ -16,6 +17,7 @@ from config import (
     CACHE_EXPIRY_PRICES_HOURS,
     CACHE_EXPIRY_FINANCIALS_DAYS
 )
+from data.corporate_actions import flexible_to_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,15 @@ class CacheManager:
                 )
             """)
 
+            # Cash dividends cache (one row per ticker with full dividend history)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS dividends_cache (
+                    ticker TEXT PRIMARY KEY,
+                    data TEXT,
+                    cached_at TIMESTAMP
+                )
+            """)
+
             conn.commit()
 
     def get_splits(self, ticker: str, expiry_days: int = 7) -> Optional[list]:
@@ -123,6 +134,36 @@ class CacheManager:
                 """INSERT OR REPLACE INTO splits_cache (ticker, data, cached_at)
                    VALUES (?, ?, ?)""",
                 (ticker.upper(), json.dumps(splits), datetime.now().isoformat()),
+            )
+            conn.commit()
+
+    def get_dividends(self, ticker: str, expiry_days: int = 7) -> Optional[list]:
+        """Return cached dividends for a ticker as a list of dicts, or None if missing/expired."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT data, cached_at FROM dividends_cache WHERE ticker = ?",
+                (ticker.upper(),),
+            )
+            result = cursor.fetchone()
+            if result is None:
+                return None
+            data, cached_at = result
+            if self._is_expired(cached_at, expiry_days * 24):
+                return None
+            try:
+                return json.loads(data)
+            except Exception:
+                return None
+
+    def set_dividends(self, ticker: str, dividends: list):
+        """Cache the dividends payload for a ticker (empty list is a valid 'no dividends' answer)."""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """INSERT OR REPLACE INTO dividends_cache (ticker, data, cached_at)
+                   VALUES (?, ?, ?)""",
+                (ticker.upper(), json.dumps(dividends), datetime.now().isoformat()),
             )
             conn.commit()
 
@@ -163,7 +204,14 @@ class CacheManager:
                 return None
 
             try:
-                return pd.read_json(data)
+                df = pd.read_json(StringIO(data))
+                # to_json/read_json round-trips datetime columns to epoch
+                # integers; filing_date is not in read_json's auto-convert
+                # list. Restore it explicitly — downstream PIT truncation
+                # depends on it being a real datetime.
+                if 'filing_date' in df.columns and not df.empty:
+                    df['filing_date'] = flexible_to_datetime(df['filing_date'])
+                return df
             except Exception as e:
                 logger.warning(f"Failed to parse cached financials for {ticker}: {e}")
                 return None
@@ -210,9 +258,9 @@ class CacheManager:
                 return None
 
             try:
-                df = pd.read_json(data)
+                df = pd.read_json(StringIO(data))
                 if 'date' in df.columns:
-                    df['date'] = pd.to_datetime(df['date'])
+                    df['date'] = flexible_to_datetime(df['date'])
                 return df
             except Exception as e:
                 logger.warning(f"Failed to parse cached prices for {ticker}: {e}")

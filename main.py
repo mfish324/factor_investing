@@ -176,9 +176,21 @@ def load_data(
             logger.warning(f"Failed to load splits for {ticker}: {e}")
             splits_by_ticker[ticker] = []
 
+    # Cash dividends — real per-share amounts for dividend-yield factors
+    # (shareholder_yield). As-declared basis; consumers split-adjust.
+    dividends_by_ticker = {}
+    iterator = tqdm(universe, desc="Loading dividends") if show_progress else universe
+    for ticker in iterator:
+        try:
+            dividends_by_ticker[ticker] = polygon_client.get_dividends(ticker)
+        except Exception as e:
+            logger.warning(f"Failed to load dividends for {ticker}: {e}")
+            dividends_by_ticker[ticker] = []
+
     logger.info(f"Loaded: {len(financials)} financials, {len(prices)} prices, {len(market_caps)} market caps")
 
-    return financials, prices, market_caps, benchmark_prices, shares_outstanding, splits_by_ticker
+    return (financials, prices, market_caps, benchmark_prices,
+            shares_outstanding, splits_by_ticker, dividends_by_ticker)
 
 
 @click.group()
@@ -251,7 +263,7 @@ def run(run_all, model, start_date, end_date, portfolio_size, rebalance, output,
         click.echo(f"Universe (current snapshot, PIT disabled): {len(universe)} stocks")
 
     # Load data
-    financials, prices, market_caps, benchmark_prices, shares_outstanding, splits_by_ticker = load_data(
+    financials, prices, market_caps, benchmark_prices, shares_outstanding, splits_by_ticker, dividends_by_ticker = load_data(
         polygon_client, universe, start_date, end_date
     )
 
@@ -285,6 +297,7 @@ def run(run_all, model, start_date, end_date, portfolio_size, rebalance, output,
             benchmark_prices=benchmark_prices,
             shares_outstanding=shares_outstanding,
             splits_by_ticker=splits_by_ticker,
+            dividends_by_ticker=dividends_by_ticker,
         )
 
         results[model_name] = result
@@ -413,7 +426,7 @@ def train_ml(tune, trials, output):
     universe = universe_manager.get_universe('sp500', exclude_financials=True)
 
     # Load data - ML training needs longer history than backtests
-    financials, prices, market_caps, benchmark_prices, _, _ = load_data(
+    financials, prices, market_caps, benchmark_prices, _, _, _ = load_data(
         polygon_client, universe, ML_TRAINING_START, BACKTEST_END_DATE
     )
 
@@ -465,7 +478,7 @@ def current_picks(model, n):
     today = datetime.now().strftime('%Y-%m-%d')
     start = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
 
-    financials, prices, market_caps, _, _, _ = load_data(
+    financials, prices, market_caps, _, _, splits_by_ticker, dividends_by_ticker = load_data(
         polygon_client, universe, start, today
     )
 
@@ -477,7 +490,9 @@ def current_picks(model, n):
         financials=financials,
         prices=prices,
         market_caps=market_caps,
-        n=n
+        n=n,
+        splits_by_ticker=splits_by_ticker,
+        dividends_by_ticker=dividends_by_ticker,
     )
 
     click.echo(f"\n{model} Top {n} Picks:")
@@ -588,7 +603,7 @@ def trade_picks(model, all_models):
                 today = datetime.now().strftime('%Y-%m-%d')
                 start = (datetime.now() - pd.Timedelta(days=365)).strftime('%Y-%m-%d')
 
-                financials, prices, market_caps, _, _, _ = load_data(
+                financials, prices, market_caps, _, _, splits_by_ticker, dividends_by_ticker = load_data(
                     polygon, universe, start, today, show_progress=False
                 )
 
@@ -596,7 +611,9 @@ def trade_picks(model, all_models):
                     financials=financials,
                     prices=prices,
                     market_caps=market_caps,
-                    n=30
+                    n=30,
+                    splits_by_ticker=splits_by_ticker,
+                    dividends_by_ticker=dividends_by_ticker,
                 )
 
                 for i, ticker in enumerate(picks[:10], 1):
@@ -835,7 +852,7 @@ def export_curves(start_date, end_date, portfolio_size, rebalance, format):
     click.echo(f"Universe: {len(universe)} stocks")
 
     # Load data
-    financials, prices, market_caps, benchmark_prices, shares_outstanding, splits_by_ticker = load_data(
+    financials, prices, market_caps, benchmark_prices, shares_outstanding, splits_by_ticker, dividends_by_ticker = load_data(
         polygon_client, universe, start_date, end_date
     )
 
@@ -862,6 +879,7 @@ def export_curves(start_date, end_date, portfolio_size, rebalance, format):
             benchmark_prices=benchmark_prices,
             shares_outstanding=shares_outstanding,
             splits_by_ticker=splits_by_ticker,
+            dividends_by_ticker=dividends_by_ticker,
             show_progress=False
         )
 
@@ -1218,7 +1236,7 @@ def shadow_backfill(start_date, end_date, models, portfolio_size, rebalance, no_
         universe = universe_manager.get_universe('sp500', exclude_financials=True)
         click.echo(f"Universe (current snapshot, PIT disabled): {len(universe)} stocks")
 
-    financials, prices, market_caps, benchmark_prices, shares_outstanding, splits_by_ticker = load_data(
+    financials, prices, market_caps, benchmark_prices, shares_outstanding, splits_by_ticker, dividends_by_ticker = load_data(
         polygon_client, universe, start_date, end_date
     )
     click.echo(f"Loaded: {len(prices)} prices, {len(market_caps)} market caps")
@@ -1237,6 +1255,7 @@ def shadow_backfill(start_date, end_date, models, portfolio_size, rebalance, no_
             benchmark_prices=benchmark_prices,
             shares_outstanding=shares_outstanding,
             splits_by_ticker=splits_by_ticker,
+            dividends_by_ticker=dividends_by_ticker,
             start_date=start_date,
             end_date=end_date,
             rebalance_freq=rebalance,
@@ -1282,7 +1301,7 @@ def shadow_update(target_date, models, portfolio_size, rebalance):
 
     polygon_client = get_polygon_client()
     universe = UniverseManager().get_universe('sp500', exclude_financials=True)
-    financials, prices, market_caps, benchmark_prices, shares_outstanding, splits_by_ticker = load_data(
+    financials, prices, market_caps, benchmark_prices, shares_outstanding, splits_by_ticker, dividends_by_ticker = load_data(
         polygon_client, universe, buffer_start, target_date
     )
 
@@ -1300,6 +1319,8 @@ def shadow_update(target_date, models, portfolio_size, rebalance):
             market_caps=market_caps,
             benchmark_prices=benchmark_prices,
             shares_outstanding=shares_outstanding,
+            splits_by_ticker=splits_by_ticker,
+            dividends_by_ticker=dividends_by_ticker,
             target_date=target_date,
             rebalance_freq=rebalance,
             portfolio_size=portfolio_size,

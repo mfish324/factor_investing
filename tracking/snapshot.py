@@ -70,6 +70,7 @@ def backfill_strategy(
     show_progress: bool = False,
     membership_db=None,
     splits_by_ticker=None,
+    dividends_by_ticker=None,
 ) -> BacktestResult:
     """Run the engine and dump its output into the shadow DB."""
     engine = BacktestEngine(
@@ -88,6 +89,7 @@ def backfill_strategy(
         benchmark_prices=benchmark_prices,
         shares_outstanding=shares_outstanding,
         splits_by_ticker=splits_by_ticker,
+        dividends_by_ticker=dividends_by_ticker,
         show_progress=show_progress,
     )
 
@@ -139,6 +141,8 @@ def update_strategy_daily(
     target_date: str,
     rebalance_freq: str = "monthly",
     portfolio_size: int = 30,
+    splits_by_ticker=None,
+    dividends_by_ticker=None,
 ) -> dict:
     """
     Incremental update for one trading day.
@@ -183,6 +187,8 @@ def update_strategy_daily(
         market_caps=market_caps,
         benchmark_prices=benchmark_prices,
         shares_outstanding=shares_outstanding,
+        splits_by_ticker=splits_by_ticker,
+        dividends_by_ticker=dividends_by_ticker,
         show_progress=False,
     )
 

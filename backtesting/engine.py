@@ -10,6 +10,7 @@ import logging
 from tqdm import tqdm  # noqa: F401
 
 from models.base import FactorModel
+from data.corporate_actions import cumulative_split_factor, flexible_to_datetime
 from .portfolio import Portfolio
 from .metrics import BacktestResult, PerformanceMetrics, calculate_metrics
 from .point_in_time import PointInTimeView, truncate_one
@@ -77,6 +78,7 @@ class BacktestEngine:
         show_progress: bool = True,
         shares_outstanding: Dict[str, float] = None,
         splits_by_ticker: Dict[str, list] = None,
+        dividends_by_ticker: Dict[str, list] = None,
         **kwargs
     ) -> BacktestResult:
         """
@@ -193,7 +195,11 @@ class BacktestEngine:
                 else:
                     market_caps_asof = market_caps
 
-                # Select new portfolio
+                # Select new portfolio. Splits and dividends are passed raw
+                # (full history): per-share amounts must be adjusted by ALL
+                # splits after their record date to match today's-basis
+                # adjusted prices, and models PIT-filter dividends by
+                # ex_dividend_date <= prices.as_of.
                 try:
                     new_holdings = self.model.select_portfolio(
                         financials=financials_view,
@@ -201,6 +207,8 @@ class BacktestEngine:
                         market_caps=market_caps_asof,
                         n=self.portfolio_size,
                         benchmark_prices=benchmark_asof,
+                        splits_by_ticker=splits_by_ticker,
+                        dividends_by_ticker=dividends_by_ticker,
                         **kwargs
                     )
 
@@ -460,27 +468,7 @@ class BacktestEngine:
         convert as-reported-then implied shares (e.g., AAPL FY2018 EPS) to
         today's basis, multiply by this factor.
         """
-        if not splits:
-            return 1.0
-        since_ts = pd.Timestamp(since_date)
-        factor = 1.0
-        for s in splits:
-            try:
-                exec_ts = pd.Timestamp(s.get("execution_date"))
-            except Exception:
-                continue
-            if pd.isna(exec_ts) or exec_ts <= since_ts:
-                continue
-            sf = s.get("split_from")
-            st = s.get("split_to")
-            try:
-                sf = float(sf)
-                st = float(st)
-            except (TypeError, ValueError):
-                continue
-            if sf > 0 and st > 0:
-                factor *= st / sf
-        return factor
+        return cumulative_split_factor(splits, since_date)
 
     @classmethod
     def _market_caps_with_splits(
@@ -547,7 +535,7 @@ class BacktestEngine:
                         s = ni / eps
                         if s > 0:
                             shares = s
-                            filing_date = pd.to_datetime(fd, errors="coerce")
+                            filing_date = flexible_to_datetime(pd.Series([fd])).iloc[0]
                             break
 
             if shares is not None and filing_date is not None and not pd.isna(filing_date):

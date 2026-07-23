@@ -13,6 +13,7 @@ import logging
 from .base import FactorModel
 from factors.base import BaseFactor
 from factors.quality import QualityFactors
+from data.corporate_actions import cumulative_split_factor, flexible_to_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,12 @@ class ShareholderYieldFactors(BaseFactor):
     Shareholder yield factor calculations.
     Measures total capital returned to shareholders via dividends,
     buybacks, and debt reduction.
+
+    Dividends come from Polygon's dividends endpoint (real per-share cash
+    amounts); buybacks from per-filing average share counts. Both are
+    as-reported values, so they are converted to today's split-adjusted
+    basis (via `cumulative_split_factor`) before being combined with
+    Polygon's split-adjusted prices.
     """
 
     name = "Shareholder Yield Factors"
@@ -31,62 +38,102 @@ class ShareholderYieldFactors(BaseFactor):
         self,
         financials: pd.DataFrame,
         prices: pd.DataFrame = None,
-        market_cap: float = None
+        market_cap: float = None,
+        splits: list = None,
+        dividends: list = None,
+        as_of=None,
     ) -> Dict[str, float]:
         """Calculate shareholder yield factors for a single stock."""
         if financials.empty or market_cap is None:
             return {}
 
         results = {
-            'dividend_yield': self._dividend_yield(financials, market_cap),
-            'buyback_yield': self._buyback_yield(financials, market_cap),
+            'dividend_yield': self._dividend_yield(prices, splits, dividends, as_of),
+            'buyback_yield': self._buyback_yield(financials, market_cap, splits),
             'debt_paydown_yield': self._debt_paydown_yield(financials, market_cap),
             'fcf_yield': self._fcf_yield(financials, market_cap),
         }
 
         return results
 
+    @staticmethod
+    def _asof_and_price(prices: pd.DataFrame, as_of=None):
+        """Return (as_of_ts, last_close) from a price DataFrame."""
+        if prices is None or prices.empty or 'close' not in prices.columns:
+            return None, None
+        last = prices.iloc[-1]
+        price = last['close']
+        if pd.isna(price) or price <= 0:
+            return None, None
+        if as_of is not None:
+            ts = pd.Timestamp(as_of)
+        elif 'date' in prices.columns:
+            ts = pd.to_datetime(last['date'], errors='coerce')
+        else:
+            ts = pd.to_datetime(prices.index[-1], errors='coerce')
+        if pd.isna(ts):
+            return None, None
+        return ts, float(price)
+
     def _dividend_yield(
         self,
-        financials: pd.DataFrame,
-        market_cap: float
+        prices: pd.DataFrame,
+        splits: list,
+        dividends: list,
+        as_of=None,
     ) -> Optional[float]:
         """
-        Dividend yield estimated from financials.
-        Uses net income payout approach when direct dividend data unavailable.
+        Trailing-12-month cash dividends per share divided by the as-of price.
+
+        Dividend amounts are as-declared per share; each is divided by the
+        cumulative split factor since its ex-date to put it on today's
+        split-adjusted basis (matching the price). Only dividends with
+        ex_dividend_date <= as_of are visible (point-in-time).
+
+        Returns None when no dividend data was provided (missing data,
+        scored neutral), 0.0 when the company paid nothing in the window.
         """
-        latest = financials.iloc[0] if len(financials) > 0 else pd.Series()
+        if dividends is None:
+            return None
+        asof_ts, price = self._asof_and_price(prices, as_of)
+        if asof_ts is None:
+            return None
 
-        # Try to get dividends paid from cash flow statement
-        # (typically reported as negative in cash flow)
-        dividends = latest.get('dividends_paid')
-        if pd.notna(dividends) and market_cap > 0:
-            return abs(dividends) / market_cap
+        window_start = asof_ts - pd.Timedelta(days=365)
+        # Parse all ex-dates in one vectorized call (per-record
+        # pd.to_datetime dominated backtest runtime)
+        ex_dates = pd.to_datetime(
+            [d.get('ex_dividend_date') for d in dividends], errors='coerce'
+        )
+        total = 0.0
+        for d, ex_ts in zip(dividends, ex_dates):
+            amount = d.get('cash_amount')
+            if pd.isna(ex_ts) or amount is None:
+                continue
+            if not (window_start < ex_ts <= asof_ts):
+                continue
+            factor = cumulative_split_factor(splits or [], ex_ts)
+            try:
+                total += float(amount) / factor
+            except (TypeError, ValueError, ZeroDivisionError):
+                continue
 
-        # Fallback: estimate from FCF and retained earnings change
-        net_income = latest.get('net_income')
-        if len(financials) >= 2 and pd.notna(net_income):
-            prev = financials.iloc[1]
-            retained_curr = latest.get('total_equity', 0) or 0
-            retained_prev = prev.get('total_equity', 0) or 0
-            # Rough estimate: dividends ~ net_income - change_in_equity
-            # (ignoring share issuance/buybacks for this estimate)
-            equity_change = retained_curr - retained_prev
-            if pd.notna(equity_change) and net_income > 0:
-                estimated_div = max(0, net_income - equity_change)
-                if market_cap > 0:
-                    return estimated_div / market_cap
-
-        return 0.0  # No dividend detected
+        return total / price
 
     def _buyback_yield(
         self,
         financials: pd.DataFrame,
-        market_cap: float
+        market_cap: float,
+        splits: list = None,
     ) -> Optional[float]:
         """
-        Net buyback yield from share count changes.
+        Net buyback yield from year-over-year change in average share count.
         Positive = company is buying back shares (shrinking float).
+
+        Per-filing share counts are as-reported, so each is scaled by the
+        cumulative split factor since its own filing date. Without this, a
+        4:1 split reads as a -300% "buyback" and a reverse split as a
+        massive one.
         """
         if len(financials) < 2 or market_cap <= 0:
             return None
@@ -97,8 +144,16 @@ class ShareholderYieldFactors(BaseFactor):
         shares_curr = latest.get('shares_outstanding')
         shares_prev = previous.get('shares_outstanding')
 
-        if pd.isna(shares_curr) or pd.isna(shares_prev) or shares_prev <= 0:
+        if pd.isna(shares_curr) or pd.isna(shares_prev) or not shares_prev or shares_prev <= 0:
             return None
+
+        if splits:
+            parsed = flexible_to_datetime(pd.Series([latest.get('filing_date'), previous.get('filing_date')]))
+            curr_fd, prev_fd = parsed.iloc[0], parsed.iloc[1]
+            if pd.isna(curr_fd) or pd.isna(prev_fd):
+                return None
+            shares_curr = shares_curr * cumulative_split_factor(splits, curr_fd)
+            shares_prev = shares_prev * cumulative_split_factor(splits, prev_fd)
 
         # Negative change = buyback (good for shareholders)
         share_change_pct = (shares_prev - shares_curr) / shares_prev
@@ -139,6 +194,10 @@ class ShareholderYieldFactors(BaseFactor):
         """
         Free cash flow yield = FCF / Market Cap.
         Measures capacity to return capital.
+
+        NOTE: Polygon's financials serve neither free_cash_flow nor capex,
+        so in practice this is operating-cash-flow yield. Kept as-is
+        (honest labeling pending a capex source).
         """
         latest = financials.iloc[0] if len(financials) > 0 else pd.Series()
 
@@ -153,6 +212,46 @@ class ShareholderYieldFactors(BaseFactor):
             return None
 
         return fcf / market_cap
+
+    def calculate_universe(
+        self,
+        financials_dict: Dict[str, pd.DataFrame],
+        prices_dict: Dict[str, pd.DataFrame] = None,
+        market_caps: Dict[str, float] = None,
+        splits_by_ticker: Dict[str, list] = None,
+        dividends_by_ticker: Dict[str, list] = None,
+        as_of=None,
+    ) -> pd.DataFrame:
+        """
+        Calculate shareholder yield factors for all stocks, passing each
+        ticker's splits and dividends into the per-stock calculation.
+        """
+        results = []
+        prices_dict = prices_dict or {}
+        market_caps = market_caps or {}
+        splits_by_ticker = splits_by_ticker or {}
+        dividends_by_ticker = dividends_by_ticker or {}
+
+        for ticker, financials in financials_dict.items():
+            try:
+                factors = self.calculate(
+                    financials,
+                    prices_dict.get(ticker),
+                    market_caps.get(ticker),
+                    splits=splits_by_ticker.get(ticker),
+                    dividends=dividends_by_ticker.get(ticker),
+                    as_of=as_of,
+                )
+                factors['ticker'] = ticker
+                results.append(factors)
+            except Exception as e:
+                logger.warning(f"Failed to calculate shareholder yield for {ticker}: {e}")
+                continue
+
+        if not results:
+            return pd.DataFrame()
+
+        return pd.DataFrame(results).set_index('ticker')
 
     def shareholder_yield_composite(
         self,
@@ -223,9 +322,19 @@ class ShareholderYieldModel(FactorModel):
         if not financials or market_caps is None:
             return pd.Series(dtype=float)
 
+        # Corporate actions, when the caller (engine / load_data) provides
+        # them. `as_of` comes from the PointInTimeView during backtests so
+        # dividend visibility is point-in-time.
+        splits_by_ticker = kwargs.get('splits_by_ticker')
+        dividends_by_ticker = kwargs.get('dividends_by_ticker')
+        as_of = getattr(prices, 'as_of', None)
+
         # Calculate shareholder yield factors
         yield_df = self.sh_yield_factors.calculate_universe(
-            financials, prices, market_caps
+            financials, prices, market_caps,
+            splits_by_ticker=splits_by_ticker,
+            dividends_by_ticker=dividends_by_ticker,
+            as_of=as_of,
         )
 
         if yield_df.empty:
