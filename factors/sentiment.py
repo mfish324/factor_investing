@@ -76,8 +76,8 @@ class InsiderFactors(BaseFactor):
 
         for _, txn in transactions.iterrows():
             txn_type = str(txn.get('transaction_type', '')).upper()
-            shares = txn.get('shares', 0) or 0
-            price = txn.get('price_per_share', 0) or 0
+            shares = self.field_or_default(txn, 'shares')
+            price = self.field_or_default(txn, 'price_per_share')
             value = abs(shares * price)
 
             if 'BUY' in txn_type or 'PURCHASE' in txn_type or txn_type == 'P':
@@ -198,7 +198,7 @@ class InsiderFactors(BaseFactor):
                 continue
 
             txn_type = str(txn.get('transaction_type', '')).upper()
-            shares = abs(txn.get('shares', 0) or 0)
+            shares = abs(self.field_or_default(txn, 'shares'))
 
             if 'BUY' in txn_type or 'PURCHASE' in txn_type or txn_type == 'P':
                 c_suite_buys += shares

@@ -59,12 +59,12 @@ class ValueFactors(BaseFactor):
 
         Enterprise Value = Market Cap + Total Debt - Cash
         """
-        ebit = financials.get('ebit') or financials.get('operating_income')
+        ebit = self.field_or_fallback(financials, 'ebit', 'operating_income')
         if pd.isna(ebit) or pd.isna(market_cap):
             return None
 
-        total_debt = financials.get('total_debt', 0) or 0
-        cash = financials.get('cash', 0) or 0
+        total_debt = self.field_or_default(financials, 'total_debt')
+        cash = self.field_or_default(financials, 'cash')
 
         enterprise_value = market_cap + total_debt - cash
 
@@ -163,7 +163,7 @@ class ValueFactors(BaseFactor):
 
         # Estimate if not available
         if pd.isna(ebitda):
-            ebit = financials.get('ebit') or financials.get('operating_income')
+            ebit = self.field_or_fallback(financials, 'ebit', 'operating_income')
             # Rough approximation - in practice would need D&A
             ebitda = ebit  # This is a simplification
 
@@ -173,8 +173,8 @@ class ValueFactors(BaseFactor):
         if ebitda <= 0:
             return None
 
-        total_debt = financials.get('total_debt', 0) or 0
-        cash = financials.get('cash', 0) or 0
+        total_debt = self.field_or_default(financials, 'total_debt')
+        cash = self.field_or_default(financials, 'cash')
 
         enterprise_value = market_cap + total_debt - cash
 

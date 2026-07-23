@@ -146,6 +146,34 @@ class BaseFactor(ABC):
         return numerator / denominator
 
     @staticmethod
+    def field_or_default(row, field: str, default: float = 0.0):
+        """
+        Get `field` from a financials row, treating a present-but-NaN value
+        the same as a missing one.
+
+        `row.get(field, default)` only substitutes `default` when the key is
+        absent. Polygon financials frequently have the key present with a NaN
+        value, and since NaN is truthy in Python, the common `row.get(f, 0)
+        or 0` idiom silently fails to catch that case -- the NaN then
+        poisons any downstream arithmetic instead of being treated as zero.
+        """
+        value = row.get(field, default)
+        return default if pd.isna(value) else value
+
+    @staticmethod
+    def field_or_fallback(row, field: str, fallback_field: str):
+        """
+        Get `field`, falling back to `fallback_field` if `field` is missing
+        or NaN.
+
+        Same NaN-vs-missing gap as `field_or_default`, but for the "prefer X,
+        else Y" idiom (`row.get(a) or row.get(b)`), which also fails to fall
+        through when `a` is present but NaN.
+        """
+        value = row.get(field)
+        return row.get(fallback_field) if pd.isna(value) else value
+
+    @staticmethod
     def get_latest_value(
         df: pd.DataFrame,
         column: str,

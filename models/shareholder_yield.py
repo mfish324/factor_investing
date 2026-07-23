@@ -175,8 +175,8 @@ class ShareholderYieldFactors(BaseFactor):
         latest = financials.iloc[0]
         previous = financials.iloc[1]
 
-        debt_curr = (latest.get('total_debt', 0) or 0) - (latest.get('cash', 0) or 0)
-        debt_prev = (previous.get('total_debt', 0) or 0) - (previous.get('cash', 0) or 0)
+        debt_curr = self.field_or_default(latest, 'total_debt') - self.field_or_default(latest, 'cash')
+        debt_prev = self.field_or_default(previous, 'total_debt') - self.field_or_default(previous, 'cash')
 
         if pd.isna(debt_curr) or pd.isna(debt_prev):
             return None

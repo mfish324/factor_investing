@@ -89,7 +89,7 @@ class QualityFactors(BaseFactor):
 
         latest = financials.iloc[0]
 
-        operating_income = latest.get('operating_income') or latest.get('ebit')
+        operating_income = self.field_or_fallback(latest, 'operating_income', 'ebit')
         if pd.isna(operating_income):
             return None
 
@@ -105,9 +105,9 @@ class QualityFactors(BaseFactor):
         nopat = operating_income * (1 - tax_rate)
 
         # Invested capital
-        equity = latest.get('total_equity', 0) or 0
-        debt = latest.get('total_debt', 0) or 0
-        cash = latest.get('cash', 0) or 0
+        equity = self.field_or_default(latest, 'total_equity')
+        debt = self.field_or_default(latest, 'total_debt')
+        cash = self.field_or_default(latest, 'cash')
 
         invested_capital = equity + debt - cash
 
@@ -134,7 +134,7 @@ class QualityFactors(BaseFactor):
             return None
 
         latest = financials.iloc[0]
-        operating_income = latest.get('operating_income') or latest.get('ebit')
+        operating_income = self.field_or_fallback(latest, 'operating_income', 'ebit')
         revenue = latest.get('revenue')
 
         return self.safe_divide(operating_income, revenue)
@@ -160,7 +160,7 @@ class QualityFactors(BaseFactor):
             return None
 
         latest = financials.iloc[0]
-        debt = latest.get('total_debt', 0) or 0
+        debt = self.field_or_default(latest, 'total_debt')
         equity = latest.get('total_equity')
 
         return self.safe_divide(debt, equity)
@@ -186,7 +186,7 @@ class QualityFactors(BaseFactor):
             return None
 
         latest = financials.iloc[0]
-        ebit = latest.get('ebit') or latest.get('operating_income')
+        ebit = self.field_or_fallback(latest, 'ebit', 'operating_income')
         interest = latest.get('interest_expense')
 
         if pd.isna(interest) or interest == 0:
