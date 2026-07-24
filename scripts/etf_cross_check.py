@@ -56,6 +56,10 @@ ETFS = {
     "SPLV": "Invesco S&P 500 Low Volatility",
 }
 
+# ml_ensemble excluded: its shadow-DB curve runs 2023-07-01 onward (the only
+# genuinely out-of-sample window given its training data), not the START_DATE
+# used here -- see results/ml_ensemble_oos_2023-07_2026-07/ for its own
+# honest evaluation.
 OUR_STRATEGIES = [
     "magic_formula",
     "piotroski",
@@ -65,7 +69,6 @@ OUR_STRATEGIES = [
     "six_factor",
     "low_volatility",
     "shareholder_yield",
-    "ml_ensemble",
 ]
 
 OUTPUT_DIR = RESULTS_DIR / "comprehensive_2026-07-18" / "etf_cross_check"

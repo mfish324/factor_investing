@@ -43,7 +43,6 @@ This biases the comparison *against* the high-yield ETFs (which have more divide
 | six_factor | 89.19% | 13.79% | 0.54 | -21.37% |
 | low_volatility | 26.86% | 4.94% | 0.08 | -21.64% |
 | shareholder_yield | 42.00% | 7.36% | 0.19 | -24.37% |
-| ml_ensemble | 111.72% | 16.41% | 0.54 | -21.97% |
 
 ## Pairwise: our strategy vs closest ETF analog
 

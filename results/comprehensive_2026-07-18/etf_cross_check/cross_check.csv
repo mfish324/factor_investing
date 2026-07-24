@@ -16,4 +16,3 @@ three_factor,our backtest,29.87%,5.44%,17.92%,0.08,-24.77%,1244
 six_factor,our backtest,89.19%,13.79%,18.02%,0.54,-21.37%,1244
 low_volatility,our backtest,26.86%,4.94%,12.20%,0.08,-21.64%,1244
 shareholder_yield,our backtest,42.00%,7.36%,17.50%,0.19,-24.37%,1244
-ml_ensemble,our backtest,111.72%,16.41%,23.13%,0.54,-21.97%,1244
