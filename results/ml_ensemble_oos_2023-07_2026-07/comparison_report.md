@@ -4,7 +4,7 @@
 
 | Model       | Total Return   | Ann. Return   | Volatility   |   Sharpe Ratio |   Sortino Ratio | Max Drawdown   |   Calmar Ratio | Win Rate   | Alpha   |   Beta |   Info Ratio |
 |:------------|:---------------|:--------------|:-------------|---------------:|----------------:|:---------------|---------------:|:-----------|:--------|-------:|-------------:|
-| ml_ensemble | 111.22%        | 28.05%        | 23.83%       |           0.99 |            1.22 | -21.55%        |            1.3 | 54.07%     | 7.81%   |   1.08 |         0.52 |
+| ml_ensemble | 131.36%        | 31.97%        | 23.43%       |           1.13 |            1.39 | -21.61%        |           1.48 | 55.64%     | 11.82%  |   1.08 |         0.71 |
 
 
 ## Return Correlations
@@ -18,12 +18,12 @@
 
 | Model       |   Max Drawdown |   Avg Drawdown |   Drawdown Duration |   Recovery Factor |
 |:------------|---------------:|---------------:|--------------------:|------------------:|
-| ml_ensemble |        -0.2155 |         -0.041 |                 637 |            5.1602 |
+| ml_ensemble |        -0.2161 |        -0.0405 |                 615 |            6.0777 |
 
 
 ## Monthly Return Statistics
 
 | Model       |   Best Month |   Worst Month |   Avg Month |   Positive Months |   Negative Months |   Monthly Std |
 |:------------|-------------:|--------------:|------------:|------------------:|------------------:|--------------:|
-| ml_ensemble |       0.2056 |        -0.104 |      0.0222 |                23 |                14 |         0.061 |
+| ml_ensemble |       0.2033 |       -0.0894 |      0.0247 |                23 |                14 |        0.0615 |
 
