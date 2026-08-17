@@ -30,6 +30,23 @@ POLYGON_API_KEY = os.environ.get("POLYGON_API_KEY", "")
 ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY", "")
 ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY", "")
 ALPACA_PAPER = True  # Set to False for live trading (use with caution!)
+# Going live also requires ALPACA_LIVE_TRADING_CONFIRM=YES in the environment
+# (see trading/alpaca_client.py) so a config-only flip can't silently arm real orders.
+
+# Trading risk controls (guard against bugs, not portfolio theory --
+# defaults are generous headroom over the natural ~3.3% equal-weight/30-stock size)
+MAX_POSITION_PCT = 0.10            # no single position may exceed 10% of portfolio
+CASH_BUFFER_PCT = 0.02             # always leave >=2% in cash, never fully invest
+MAX_REBALANCE_TURNOVER_PCT = 0.60  # abort if a rebalance would trade >60% of portfolio value
+MIN_PICKS_FRACTION = 0.80          # abort if model returns <80% of requested portfolio_size
+ORDER_FILL_TIMEOUT_SECONDS = 60
+
+# Alerting (email via SMTP). If unset, trading/alerts.py logs a warning and no-ops.
+SMTP_HOST = os.environ.get("SMTP_HOST", "")
+SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
+SMTP_USER = os.environ.get("SMTP_USER", "")
+SMTP_PASSWORD = os.environ.get("SMTP_PASSWORD", "")
+ALERT_EMAIL_TO = os.environ.get("ALERT_EMAIL_TO", "")
 
 # Cache settings
 CACHE_DB_PATH = DATA_DIR / "cache.db"

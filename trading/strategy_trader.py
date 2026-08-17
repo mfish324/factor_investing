@@ -10,11 +10,12 @@ from pathlib import Path
 import pandas as pd
 
 from .alpaca_client import AlpacaClient
-from .portfolio_manager import PortfolioManager, RebalanceResult
+from .alerts import send_alert
+from .portfolio_manager import PortfolioManager, RebalanceResult, TurnoverGuardError
 from models.base import FactorModel
 from data.polygon_client import PolygonClient
 from data.universe import UniverseManager
-from config import POLYGON_API_KEY, RESULTS_DIR
+from config import POLYGON_API_KEY, RESULTS_DIR, MIN_PICKS_FRACTION
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +119,18 @@ class StrategyTrader:
         )
 
         logger.info(f"{self.model.name} selected {len(picks)} stocks")
+
+        min_picks = self.portfolio_size * MIN_PICKS_FRACTION
+        if len(picks) < min_picks:
+            msg = (
+                f"{self.model.name} only selected {len(picks)}/{self.portfolio_size} "
+                f"stocks (below MIN_PICKS_FRACTION={MIN_PICKS_FRACTION:.0%}) -- likely a "
+                f"data problem, refusing to rebalance into a truncated portfolio"
+            )
+            logger.error(msg)
+            send_alert(f"{self.model.name}: too few picks, rebalance skipped", msg)
+            return []
+
         return picks
 
     def run_rebalance(
@@ -130,7 +143,9 @@ class StrategyTrader:
 
         Args:
             dry_run: If True, calculate trades but don't execute
-            force: If True, rebalance even if within drift threshold
+            force: If True, rebalance even if within drift threshold, AND bypass
+                the turnover guard (max_rebalance_turnover_pct) -- use deliberately,
+                since the turnover guard exists to catch bad/truncated pick lists
 
         Returns:
             RebalanceResult or None if no rebalance needed
@@ -150,21 +165,68 @@ class StrategyTrader:
             return None
 
         # Execute rebalance
-        result = self.portfolio_manager.execute_rebalance(
-            target_symbols=target_symbols,
-            strategy_name=self.model.name,
-            equal_weight=True,
-            dry_run=dry_run
-        )
+        try:
+            result = self.portfolio_manager.execute_rebalance(
+                target_symbols=target_symbols,
+                strategy_name=self.model.name,
+                equal_weight=True,
+                dry_run=dry_run,
+                force=force
+            )
+        except TurnoverGuardError as e:
+            logger.error(f"Rebalance for {self.model.name} aborted by turnover guard")
+            send_alert(f"{self.model.name}: rebalance aborted (turnover guard)", str(e))
+            raise
 
-        # Log the rebalance
-        self._log_rebalance(result)
+        # Log the rebalance (skip dry runs -- this log is also read back by
+        # get_last_rebalance_time() to decide whether a scheduled rebalance is
+        # due, and a preview must never count as a completed rebalance)
+        if not dry_run:
+            self._log_rebalance(result)
+
+        if not dry_run and (result.trades_failed or result.trades_unfilled):
+            send_alert(
+                f"{self.model.name}: rebalance had failed/unfilled trades",
+                f"{len(result.trades_failed)} failed, {len(result.trades_unfilled)} unfilled.\n\n"
+                f"Failed: {[(t.symbol, t.side, err) for t, err in result.trades_failed]}\n"
+                f"Unfilled: {[(t.symbol, t.side, o.id) for t, o in result.trades_unfilled]}"
+            )
 
         return result
 
+    def _log_file_path(self) -> Path:
+        return self.log_dir / f"{self.model.name.lower().replace(' ', '_')}_trades.jsonl"
+
+    def get_last_rebalance_time(self) -> Optional[datetime]:
+        """
+        Return the timestamp of the most recently logged rebalance, or None if
+        none has been logged yet. Used to persist due-date state across
+        separate process invocations (e.g. one per day from Task Scheduler).
+        """
+        log_file = self._log_file_path()
+        if not log_file.exists():
+            return None
+
+        last_line = None
+        with open(log_file) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    last_line = line
+
+        if not last_line:
+            return None
+
+        try:
+            entry = json.loads(last_line)
+            return datetime.fromisoformat(entry['timestamp'])
+        except (json.JSONDecodeError, KeyError, ValueError):
+            logger.warning(f"Could not parse last rebalance timestamp from {log_file}")
+            return None
+
     def _log_rebalance(self, result: RebalanceResult):
         """Log rebalance result to file."""
-        log_file = self.log_dir / f"{self.model.name.lower().replace(' ', '_')}_trades.jsonl"
+        log_file = self._log_file_path()
 
         log_entry = {
             'timestamp': result.timestamp.isoformat(),
@@ -173,6 +235,7 @@ class StrategyTrader:
             'portfolio_value_after': result.portfolio_value_after,
             'num_trades_executed': len(result.trades_executed),
             'num_trades_failed': len(result.trades_failed),
+            'num_trades_unfilled': len(result.trades_unfilled),
             'target_positions': list(result.target_positions.keys()),
             'trades': [
                 {
@@ -186,6 +249,10 @@ class StrategyTrader:
             'failures': [
                 {'symbol': t.symbol, 'side': t.side, 'error': e}
                 for t, e in result.trades_failed
+            ],
+            'unfilled': [
+                {'symbol': t.symbol, 'side': t.side, 'order_id': o.id, 'status': o.status}
+                for t, o in result.trades_unfilled
             ]
         }
 

@@ -87,6 +87,15 @@ class AlpacaClient:
                 "ALPACA_SECRET_KEY environment variables or pass them directly."
             )
 
+        if not paper and os.environ.get('ALPACA_LIVE_TRADING_CONFIRM') != 'YES':
+            raise ValueError(
+                "Refusing to start a live (non-paper) Alpaca client: set "
+                "ALPACA_LIVE_TRADING_CONFIRM=YES in the environment to confirm "
+                "you intend to trade real money. This is a deliberate second "
+                "switch on top of ALPACA_PAPER=False so a config change alone "
+                "can never silently arm live trading."
+            )
+
         # Initialize trading client
         self.trading_client = TradingClient(
             api_key=self.api_key,

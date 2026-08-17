@@ -31,6 +31,7 @@ from config import (
     ROTATION_REBALANCE_FREQ,
     ML_TRAINING_START,
     MODELS_DIR,
+    ALPACA_PAPER,
 )
 from data.polygon_client import PolygonClient
 from data.cache import CacheManager
@@ -554,7 +555,7 @@ def trade_status(model):
         return
 
     try:
-        alpaca = AlpacaClient(paper=True)
+        alpaca = AlpacaClient(paper=ALPACA_PAPER)
         polygon = get_polygon_client()
         model_instance = AVAILABLE_MODELS[model]()
 
@@ -630,7 +631,7 @@ def trade_picks(model, all_models):
 
         try:
             # For single model, show with Alpaca integration if available
-            alpaca = AlpacaClient(paper=True)
+            alpaca = AlpacaClient(paper=ALPACA_PAPER)
             model_instance = AVAILABLE_MODELS[model]()
 
             trader = StrategyTrader(
@@ -648,7 +649,7 @@ def trade_picks(model, all_models):
 @trade.command('rebalance')
 @click.option('--model', '-m', default='six_factor', help='Model to rebalance')
 @click.option('--dry-run', is_flag=True, help='Show trades without executing')
-@click.option('--force', is_flag=True, help='Force rebalance even if within threshold')
+@click.option('--force', is_flag=True, help='Force rebalance even if within threshold, and bypass the turnover safety guard')
 def trade_rebalance(model, dry_run, force):
     """Execute a rebalance for a strategy."""
     try:
@@ -664,7 +665,7 @@ def trade_rebalance(model, dry_run, force):
         return
 
     try:
-        alpaca = AlpacaClient(paper=True)
+        alpaca = AlpacaClient(paper=ALPACA_PAPER)
         polygon = get_polygon_client()
         model_instance = AVAILABLE_MODELS[model]()
 
@@ -719,13 +720,13 @@ def trade_account():
         return
 
     try:
-        alpaca = AlpacaClient(paper=True)
+        alpaca = AlpacaClient(paper=ALPACA_PAPER)
         account = alpaca.get_account()
 
         click.echo("\nAlpaca Account Info:")
         click.echo("=" * 40)
         click.echo(f"  Status: {account['status']}")
-        click.echo(f"  Paper Trading: Yes")
+        click.echo(f"  Paper Trading: {'Yes' if alpaca.paper else 'NO -- LIVE'}")
         click.echo(f"  Currency: {account['currency']}")
         click.echo(f"\n  Portfolio Value: ${account['portfolio_value']:,.2f}")
         click.echo(f"  Cash: ${account['cash']:,.2f}")
@@ -758,7 +759,7 @@ def trade_positions():
         return
 
     try:
-        alpaca = AlpacaClient(paper=True)
+        alpaca = AlpacaClient(paper=ALPACA_PAPER)
         positions = alpaca.get_positions()
         account = alpaca.get_account()
 
@@ -800,7 +801,7 @@ def trade_close_all():
         return
 
     try:
-        alpaca = AlpacaClient(paper=True)
+        alpaca = AlpacaClient(paper=ALPACA_PAPER)
 
         if not alpaca.is_market_open():
             click.echo("Market is closed. Cannot close positions.")
@@ -812,6 +813,77 @@ def trade_close_all():
         click.echo(f"Submitted {len(orders)} close orders")
         for order in orders:
             click.echo(f"  {order.side} {order.symbol}: {order.status}")
+
+    except Exception as e:
+        click.echo(f"Error: {e}")
+
+
+@trade.command('reconcile')
+@click.option('--model', '-m', default='six_factor', help='Model to reconcile')
+@click.option('--drift-threshold', default=0.02, help='Weight drift to flag, as a fraction (default 2%)')
+def trade_reconcile(model, drift_threshold):
+    """
+    Compare actual Alpaca holdings against the shadow tracker's expected
+    holdings for a strategy (read-only, no trades).
+    """
+    try:
+        from trading.alpaca_client import AlpacaClient
+    except ImportError as e:
+        click.echo(f"Trading dependencies not available: {e}")
+        return
+
+    from tracking import ShadowDB
+
+    if model not in AVAILABLE_MODELS:
+        click.echo(f"Unknown model: {model}")
+        return
+
+    try:
+        alpaca = AlpacaClient(paper=ALPACA_PAPER)
+        account = alpaca.get_account()
+        portfolio_value = account['portfolio_value']
+
+        actual = {
+            pos.symbol: pos.market_value / portfolio_value
+            for pos in alpaca.get_positions()
+        } if portfolio_value > 0 else {}
+
+        shadow_df = ShadowDB().get_current_holdings(model)
+        expected = dict(zip(shadow_df['ticker'], shadow_df['weight'])) if not shadow_df.empty else {}
+
+        if not expected:
+            click.echo(f"No shadow holdings found for '{model}'. Run 'python main.py shadow backfill' first.")
+            return
+
+        only_shadow = sorted(set(expected) - set(actual))
+        only_alpaca = sorted(set(actual) - set(expected))
+        both = sorted(set(expected) & set(actual))
+
+        click.echo(f"\nReconciliation: {model} (shadow-expected vs Alpaca-actual)")
+        click.echo("=" * 60)
+
+        if only_shadow:
+            click.echo(f"\nExpected but NOT held ({len(only_shadow)}):")
+            for t in only_shadow:
+                click.echo(f"  {t}: expected weight {expected[t]:.1%}")
+
+        if only_alpaca:
+            click.echo(f"\nHeld but NOT expected ({len(only_alpaca)}):")
+            for t in only_alpaca:
+                click.echo(f"  {t}: actual weight {actual[t]:.1%}")
+
+        drifted = [
+            (t, expected[t], actual[t])
+            for t in both
+            if abs(expected[t] - actual[t]) > drift_threshold
+        ]
+        if drifted:
+            click.echo(f"\nWeight drift beyond {drift_threshold:.1%} ({len(drifted)}):")
+            for t, exp_w, act_w in drifted:
+                click.echo(f"  {t}: expected {exp_w:.1%}, actual {act_w:.1%} (drift {act_w - exp_w:+.1%})")
+
+        if not only_shadow and not only_alpaca and not drifted:
+            click.echo("\nIn sync: no missing/extra positions, no drift beyond threshold.")
 
     except Exception as e:
         click.echo(f"Error: {e}")
